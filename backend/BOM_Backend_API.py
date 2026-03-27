@@ -8,7 +8,7 @@ from typing import Optional
 
 app = FastAPI(title="BOM Platform API (Mock Phase)")
 
-# Configure CORS for frontend access
+# Configure CORS to allow React frontend to call the API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,14 +17,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory storage for BOM data
+# Global variables to store parsed BOM data in memory
 global_bom_data = []
 global_columns = []
 
 
 @app.get("/")
 async def root():
-    """Welcome page"""
+    """Welcome page to verify server is running."""
     return {
         "message": "Success! BOM Backend is running.",
         "docs_url": "Visit /docs for API documentation"
@@ -33,18 +33,18 @@ async def root():
 
 @app.post("/api/upload")
 async def upload_bom(file: UploadFile = File(...)):
-    """Receive and parse uploaded Excel/CSV file"""
+    """Receive, parse, and extract data/columns from the uploaded Excel/CSV file."""
     global global_bom_data, global_columns
     contents = await file.read()
 
     try:
-        # Determine file type
+        # Determine the correct engine based on file extension
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(contents))
         else:
             df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
 
-        # Replace NaN values with empty strings to avoid JSON serialization errors
+        # Replace NaN values with empty strings to avoid JSON serialization errors in React
         df = df.fillna("")
 
         # Extract dynamic columns and row data
@@ -65,14 +65,14 @@ async def upload_bom(file: UploadFile = File(...)):
 @app.get("/api/search")
 async def search_drawings(category: str, component: str):
     """
-    Mock API simulating SharePoint Graph API search.
+    Mock API simulating the SharePoint Graph API search behavior.
     """
-    # Simulate network delay for realistic UI loading
+    # Simulate network delay for realistic UI loading experience
     await asyncio.sleep(0.6)
 
     mock_drawings = []
 
-    # Generate mock data based on the component number
+    # Generate mock drawing data based on the requested component number
     if component and "-" in component:
         mock_drawings = [
             {
