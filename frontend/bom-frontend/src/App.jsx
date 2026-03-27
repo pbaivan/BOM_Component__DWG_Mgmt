@@ -21,13 +21,11 @@ const ColumnFilter = ({ column, data, filters, setFilters, isOpen, toggleMenu, c
   const [searchTerm, setSearchTerm] = useState('');
   const menuRef = useOutsideClick(closeMenu);
 
-  // Extract unique values for this column
   const uniqueValues = useMemo(() => {
     const values = new Set(data.map(row => String(row[column] || '')));
     return Array.from(values).sort();
   }, [data, column]);
 
-  // Filter unique values based on search input
   const displayValues = useMemo(() => {
     if (!searchTerm) return uniqueValues;
     return uniqueValues.filter(v => v.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -109,8 +107,8 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
   const [filters, setFilters] = useState({});
   const [openMenuColumn, setOpenMenuColumn] = useState(null);
 
-  // Initialize filters when data/columns change
   useEffect(() => {
+    if (!columns) return;
     const initialFilters = {};
     columns.forEach(col => {
       initialFilters[col] = new Set(data.map(row => String(row[col] || '')));
@@ -118,8 +116,8 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
     setFilters(initialFilters);
   }, [data, columns]);
 
-  // Apply filters
   const filteredData = useMemo(() => {
+    if (!columns) return data;
     return data.filter(row => {
       return columns.every(col => {
         const allowedValues = filters[col];
@@ -130,11 +128,7 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
   }, [data, columns, filters]);
 
   if (!columns || columns.length === 0) {
-    return (
-      <div className="h-full flex items-center justify-center text-slate-400">
-        No data available to display.
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -196,10 +190,13 @@ export default function App() {
   const [drawings, setDrawings] = useState([]);
   const [loadingDrawings, setLoadingDrawings] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  
+  // File Metadata State
+  const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
 
-  // Upload Excel/CSV
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0];
+  // Core Upload Logic
+  const processFile = async (file) => {
     if (!file) return;
 
     setUploading(true);
@@ -214,11 +211,26 @@ export default function App() {
       const result = await response.json();
       
       if (result.status === "success") {
-        setColumns(result.columns);
-        setMasterData(result.data);
+        // Fallback mechanism: if backend doesn't send columns, extract from the first row of data
+        const fetchedCols = result.columns && result.columns.length > 0 
+          ? result.columns 
+          : (result.data && result.data.length > 0 ? Object.keys(result.data[0]) : []);
+          
+        setColumns(fetchedCols);
+        setMasterData(result.data || []);
         setDetailData([]);
         setSelectedParent(null);
         setDrawings([]);
+
+        // Update Metadata
+        const now = new Date();
+        const formattedDate = now.toLocaleDateString() + ' ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setFileMeta({
+          name: file.name,
+          date: formattedDate,
+          version: '1.0'
+        });
+
       } else {
         alert("Parsing failed: " + result.message);
       }
@@ -227,7 +239,31 @@ export default function App() {
       alert("Cannot connect to backend server. Please ensure Python backend is running at http://127.0.0.1:8000");
     } finally {
       setUploading(false);
-      event.target.value = ''; 
+    }
+  };
+
+  // Button Upload Handler
+  const handleFileUpload = (event) => {
+    processFile(event.target.files[0]);
+    event.target.value = ''; 
+  };
+
+  // Drag and Drop Handlers
+  const onDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const onDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processFile(e.dataTransfer.files[0]);
     }
   };
 
@@ -237,24 +273,29 @@ export default function App() {
     setDrawings([]);
     setSelectedDetail(null);
 
-    // Calculate children based on PARENT and LEVEL logic
+    // Dynamic Level Calculation
+    const currentLevel = row.LEVEL !== undefined ? String(row.LEVEL) : null;
     let children = [];
-    if (String(row.LEVEL) === "0") {
+    
+    if (currentLevel === "0") {
       children = masterData.filter(d => d.COMPONENT === row.COMPONENT && String(d.LEVEL) === "0");
-    } else {
+    } else if (currentLevel) {
       children = masterData.filter(d => 
         d.PARENT === row.COMPONENT && Number(d.LEVEL) === Number(row.LEVEL) + 1
       );
+    } else {
+      // Fallback if LEVEL column is missing, just match PARENT
+      children = masterData.filter(d => d.PARENT === row.COMPONENT);
     }
+    
     setDetailData(children);
   }, [masterData]);
 
-  // Detail Table Row Click (Call Mock API)
+  // Detail Table Row Click
   const onDetailRowClicked = useCallback(async (row) => {
     setSelectedDetail(row);
     setLoadingDrawings(true);
 
-    // Default parameters for search if specific columns are missing
     const category = row.Category || 'Unknown';
     const component = row.COMPONENT || row.TOP_ASSY || 'Unknown';
 
@@ -282,7 +323,7 @@ export default function App() {
         <div>
           <label className="flex items-center px-4 py-2 bg-blue-600 text-white font-medium rounded shadow hover:bg-blue-700 transition cursor-pointer">
             {uploading ? <Loader2 className="animate-spin mr-2" size={16} /> : <Upload size={16} className="mr-2" />}
-            <span>{uploading ? "Processing..." : "Upload File (.xlsx / .csv)"}</span>
+            <span>{uploading ? "Processing..." : "Upload BOM"}</span>
             <input type="file" accept=".csv, .xlsx" className="hidden" onChange={handleFileUpload} />
           </label>
         </div>
@@ -294,33 +335,72 @@ export default function App() {
         {/* Left Section (Master & Detail Tables) */}
         <div className="w-7/12 flex flex-col space-y-4">
           
-          {/* Master Table */}
-          <div className="flex-1 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+          {/* Master Table Area with Drag & Drop */}
+          <div 
+            className={`flex-1 bg-white rounded-lg shadow-sm border ${isDragging ? 'border-blue-500 bg-blue-50/50' : 'border-slate-200'} flex flex-col overflow-hidden relative transition-colors`}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+          >
+            {/* Drag Overlay */}
+            {isDragging && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-blue-50/90 border-2 border-dashed border-blue-400 rounded-lg">
+                <div className="text-center">
+                  <Upload size={48} className="mx-auto text-blue-500 mb-2" />
+                  <p className="text-xl font-bold text-blue-600">Drop your file here to upload</p>
+                </div>
+              </div>
+            )}
+
+            {/* Header with Metadata */}
             <div className="px-4 py-3 border-b bg-slate-50 flex justify-between items-center">
-              <h2 className="font-semibold text-slate-700">1. Master BOM Table</h2>
+              <div className="flex items-center space-x-6">
+                <h2 className="font-semibold text-slate-700">1. Master BOM Table</h2>
+                {fileMeta.name && (
+                  <div className="flex items-center space-x-4 text-xs">
+                    <span className="text-slate-500">File: <span className="font-semibold text-slate-700">{fileMeta.name}</span></span>
+                    <span className="text-slate-500">Upload Date: <span className="text-slate-700">{fileMeta.date}</span></span>
+                    <div className="flex items-center">
+                      <span className="text-slate-500 mr-2">Version:</span>
+                      <input 
+                        type="text" 
+                        value={fileMeta.version} 
+                        onChange={(e) => setFileMeta({...fileMeta, version: e.target.value})}
+                        className="border border-slate-300 rounded px-2 py-0.5 w-16 text-center text-slate-700 font-medium focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
               <span className="text-xs font-medium text-slate-500 bg-slate-200 px-2 py-1 rounded-full">Total: {masterData.length} Rows</span>
             </div>
+
+            {/* Table Area */}
             <div className="flex-1 overflow-hidden relative">
               {masterData.length > 0 ? (
                 <ExcelTable data={masterData} columns={columns} onRowClick={onMasterRowClicked} selectedRow={selectedParent} />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400">
                   <FileText size={40} className="mb-3 text-slate-300" />
-                  <p>Please upload a BOM file to begin.</p>
+                  <p>Drag & Drop a <b>.xlsx</b> or <b>.csv</b> file here</p>
+                  <p className="text-xs mt-2 text-slate-300">or use the upload button at the top right</p>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Detail Table */}
+          {/* Detail Table Area */}
           <div className="h-1/3 min-h-[250px] bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-             <div className="px-4 py-3 border-b bg-slate-50 flex items-center">
-              <h2 className="font-semibold text-slate-700 mr-4">2. Required Child Components</h2>
-              {selectedParent && selectedParent.COMPONENT && (
-                <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded border border-blue-200 shadow-sm">
-                  Target Parent: <span className="font-mono font-bold">{selectedParent.COMPONENT}</span> (Level {selectedParent.LEVEL})
-                </span>
-              )}
+             <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
+              <div className="flex items-center">
+                <h2 className="font-semibold text-slate-700 mr-4">2. Required Child Components</h2>
+                {selectedParent && selectedParent.COMPONENT && (
+                  <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded border border-blue-200 shadow-sm">
+                    Target Parent: <span className="font-mono font-bold">{selectedParent.COMPONENT}</span> (Level {selectedParent.LEVEL})
+                  </span>
+                )}
+              </div>
+              <span className="text-xs font-medium text-slate-500 bg-slate-200 px-2 py-1 rounded-full">Total: {detailData.length} Rows</span>
             </div>
             <div className="flex-1 overflow-hidden relative">
               {selectedParent ? (
@@ -337,7 +417,7 @@ export default function App() {
         {/* Right Section (Drawings) */}
         <div className="w-5/12 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col overflow-hidden">
           <div className="px-4 py-3 border-b bg-slate-50">
-            <h2 className="font-semibold text-slate-700">3. SharePoint Drawings (Mock)</h2>
+            <h2 className="font-semibold text-slate-700">3. SharePoint Drawings (Mock API)</h2>
           </div>
           
           <div className="flex-1 p-4 overflow-auto bg-slate-50/50">
