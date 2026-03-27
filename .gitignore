@@ -1,0 +1,14 @@
+# Python
+backend/.venv/
+frontend/.venv/
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+
+# Node（如果后面你用 React）
+frontend/node_modules/
+
+# env
+.env
