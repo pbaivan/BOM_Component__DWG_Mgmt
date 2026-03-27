@@ -108,9 +108,19 @@ async def search_drawings(category: str, component: str):
             }
         ]
 
+    # Generate a structured array for the SharePoint Breadcrumb path
+    sharepoint_path_array = [
+        "SharePoint Root",
+        "Engineering Documents",
+        category if category else "Uncategorized",
+        component if component else "Unknown Model",
+        "Released Drawings"
+    ]
+
     return {
         "status": "success",
         "mock_category_folder": category,
+        "sharepoint_path": sharepoint_path_array,
         "results": mock_drawings
     }
 
