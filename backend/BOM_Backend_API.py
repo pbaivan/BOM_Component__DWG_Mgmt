@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
 import uvicorn
+import asyncio
+from typing import Optional
 
-app = FastAPI(title="BOM Platform API")
+app = FastAPI(title="BOM Platform API (Mock Version)")
 
 # 配置 CORS，允许 React 前端跨域调用
 app.add_middleware(
@@ -15,8 +17,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 内存中缓存解析后的 BOM 数据，提升 Phase 1 的查询速度
+# 内存中缓存解析后的 BOM 数据
 global_bom_data = []
+
+
+@app.get("/")
+async def root():
+    """根目录欢迎测试页"""
+    return {
+        "message": "恭喜！BOM 平台后端已成功运行！",
+        "docs_url": "访问 /docs 查看接口文档"
+    }
 
 
 @app.post("/api/upload")
@@ -25,17 +36,13 @@ async def upload_bom(file: UploadFile = File(...)):
     global global_bom_data
     contents = await file.read()
 
-    # 动态判断是 CSV 还是 Excel
     try:
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(contents))
         else:
-            df = pd.read_excel(io.BytesIO(contents))
+            df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
 
-        # 填充空值，避免 JSON 序列化报错
         df = df.fillna("")
-
-        # 转换为字典列表
         global_bom_data = df.to_dict(orient="records")
         return {"status": "success", "rows": len(global_bom_data), "data": global_bom_data}
 
@@ -46,32 +53,63 @@ async def upload_bom(file: UploadFile = File(...)):
 @app.get("/api/search")
 async def search_drawings(category: str, component: str):
     """
-    Phase 1: 模拟对接 SharePoint Graph API。
-    实际开发时，这里将引入 msal 库获取 Token，并通过 httpx 发送请求到 Graph API。
+    Phase 1: 完全使用 Mock 数据模拟 SharePoint 返回。
     """
-    # 模拟 Graph API 的检索耗时
-    import asyncio
-    await asyncio.sleep(0.5)
+    # 模拟网络延迟 0.6 秒，让前端 loading 动画更真实
+    await asyncio.sleep(0.6)
 
-    # 根据型号模糊匹配一些测试的图纸数据
+    # 根据 Component 型号生成动态的 Mock 图纸数据
     mock_drawings = []
-    if "02-" in component or "01-" in component:
+
+    # 如果是带有横杠的常规组件 (如 01-00128434)
+    if component and "-" in component:
         mock_drawings = [
-            {"id": "doc1", "name": f"{component}A01_Assy.pdf", "version": "A01", "url": "#", "type": "PDF"},
-            {"id": "doc2", "name": f"{component}B01_Part.pdf", "version": "B01", "url": "#", "type": "PDF"},
-            {"id": "doc3", "name": f"{component}_Model.step", "version": "-", "url": "#", "type": "CAD"}
+            {
+                "id": f"doc_{component}_1",
+                "name": f"{component}_Assembly_Drawing.pdf",
+                "version": "A01",
+                "url": "#",
+                "type": "PDF",
+                "date": "2023-10-15"
+            },
+            {
+                "id": f"doc_{component}_2",
+                "name": f"{component}_Part_Details.pdf",
+                "version": "B02",
+                "url": "#",
+                "type": "PDF",
+                "date": "2023-11-20"
+            },
+            {
+                "id": f"doc_{component}_3",
+                "name": f"{component}_3D_Model.step",
+                "version": "Release",
+                "url": "#",
+                "type": "CAD",
+                "date": "2023-12-01"
+            }
         ]
     elif component:
+        # 其他基础组件
         mock_drawings = [
-            {"id": "doc4", "name": f"{component}_Datasheet.pdf", "version": "1.0", "url": "#", "type": "PDF"}
+            {
+                "id": f"doc_{component}_4",
+                "name": f"{component}_Datasheet.pdf",
+                "version": "1.0",
+                "url": "#",
+                "type": "PDF",
+                "date": "2024-01-10"
+            }
         ]
 
+    # 将解析到的 category 放在返回中以示验证
     return {
         "status": "success",
-        "category_mapped": f"Folder_ID_FOR_{category}",
+        "mock_category_folder": category,
         "results": mock_drawings
     }
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # 注意：确保你的文件名依然叫 BOM_Backend_API.py
+    uvicorn.run("BOM_Backend_API:app", host="0.0.0.0", port=8000, reload=True)
