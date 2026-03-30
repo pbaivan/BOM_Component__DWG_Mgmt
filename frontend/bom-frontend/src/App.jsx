@@ -216,9 +216,27 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [sharepointPath, setSharepointPath] = useState([]);
+  const dragDepthRef = useRef(0);
   
   // File Metadata State
   const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
+
+  useEffect(() => {
+    // Prevent browser from opening/downloading files when dropped outside the intended drop zone.
+    const preventWindowFileDrop = (event) => {
+      if (event.dataTransfer?.types?.includes('Files')) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener('dragover', preventWindowFileDrop);
+    window.addEventListener('drop', preventWindowFileDrop);
+
+    return () => {
+      window.removeEventListener('dragover', preventWindowFileDrop);
+      window.removeEventListener('drop', preventWindowFileDrop);
+    };
+  }, []);
 
   const processFile = async (file) => {
     if (!file) return;
@@ -274,27 +292,38 @@ export default function App() {
   const onDragEnter = (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    dragDepthRef.current += 1;
     setIsDragging(true);
   };
 
   const onDragLeave = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragging(false);
+    }
   };
 
   const onDragOver = (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    e.dataTransfer.dropEffect = 'copy';
     setIsDragging(true);
   };
 
   const onDrop = (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    dragDepthRef.current = 0;
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       processFile(e.dataTransfer.files[0]);
+      e.dataTransfer.clearData();
     }
   };
 
