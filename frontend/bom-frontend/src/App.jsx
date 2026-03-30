@@ -1,25 +1,11 @@
-import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Upload, FileText, Download, Eye, Loader2, Database, Filter, Search } from 'lucide-react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { Upload, FileText, Download, Eye, Loader2, Database, Filter, Search, ChevronRight, HardDrive, FolderOpen } from 'lucide-react';
 
-// Custom hook to handle clicks outside the filter dropdown
-const useOutsideClick = (callback) => {
-  const ref = useRef();
-  useEffect(() => {
-    const handleClick = (event) => {
-      if (ref.current && !ref.current.contains(event.target)) {
-        callback();
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [callback]);
-  return ref;
-};
-
-// Excel-like Filter Menu Component
+// Excel-like Filter Menu Component with Fixed Overlay approach to prevent closing
 const ColumnFilter = ({ column, data, filters, setFilters, isOpen, toggleMenu, closeMenu }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const menuRef = useOutsideClick(closeMenu);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
 
   const uniqueValues = useMemo(() => {
     const values = new Set(data.map(row => String(row[column] || '')));
@@ -52,51 +38,89 @@ const ColumnFilter = ({ column, data, filters, setFilters, isOpen, toggleMenu, c
     }
   };
 
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (
+        (menuRef.current && menuRef.current.contains(target)) ||
+        (triggerRef.current && triggerRef.current.contains(target))
+      ) {
+        return;
+      }
+      closeMenu();
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeMenu();
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, closeMenu]);
+
   return (
-    <div className="relative inline-block ml-2" ref={menuRef}>
+    <div className="relative inline-block ml-2">
       <button 
-        onClick={(e) => { e.stopPropagation(); toggleMenu(); }}
-        className={`p-1 rounded hover:bg-slate-200 transition-colors ${selectedValues.size < uniqueValues.length ? 'text-blue-600' : 'text-slate-400'}`}
+        ref={triggerRef}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleMenu(); }}
+        className={`p-1 rounded transition-colors hover:bg-slate-200 ${selectedValues.size < uniqueValues.length ? 'text-blue-600 bg-blue-50' : 'text-slate-400'}`}
+        title="Filter column"
       >
         <Filter size={14} />
       </button>
 
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-xl z-50 p-3 font-normal">
-          <div className="relative mb-2">
-            <Search size={14} className="absolute left-2 top-2 text-slate-400" />
-            <input 
-              type="text" 
-              placeholder="Search..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-300 rounded focus:outline-none focus:border-blue-500"
-            />
-          </div>
-          
-          <div className="max-h-48 overflow-y-auto space-y-1 border border-slate-100 p-1">
-            <label className="flex items-center p-1 hover:bg-slate-50 cursor-pointer rounded">
+        <>
+          {/* Dropdown Menu Container */}
+          <div 
+            ref={menuRef}
+            className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-xl z-50 p-3 font-normal"
+            onClick={(e) => e.stopPropagation()} 
+          >
+            <div className="relative mb-2">
+              <Search size={14} className="absolute left-2 top-2 text-slate-400" />
               <input 
-                type="checkbox" 
-                checked={isAllSelected} 
-                onChange={handleSelectAll}
-                className="mr-2 rounded border-slate-300"
+                type="text" 
+                placeholder="Search values..." 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-300 rounded focus:outline-none focus:border-blue-500"
               />
-              <span className="text-xs font-semibold text-slate-700">(Select All)</span>
-            </label>
-            {displayValues.map((val, idx) => (
-              <label key={idx} className="flex items-center p-1 hover:bg-slate-50 cursor-pointer rounded">
+            </div>
+            
+            <div className="max-h-48 overflow-y-auto space-y-1 border border-slate-100 p-1">
+              <label className="flex items-center p-1 hover:bg-slate-50 cursor-pointer rounded">
                 <input 
                   type="checkbox" 
-                  checked={selectedValues.has(val)} 
-                  onChange={() => handleCheckboxChange(val)}
-                  className="mr-2 rounded border-slate-300"
+                  checked={isAllSelected} 
+                  onChange={handleSelectAll}
+                  className="mr-2 rounded border-slate-300 cursor-pointer"
                 />
-                <span className="text-xs text-slate-600 truncate">{val === '' ? '(Blank)' : val}</span>
+                <span className="text-xs font-semibold text-slate-700">(Select All)</span>
               </label>
-            ))}
+              {displayValues.map((val, idx) => (
+                <label key={idx} className="flex items-center p-1 hover:bg-slate-50 cursor-pointer rounded">
+                  <input 
+                    type="checkbox" 
+                    checked={selectedValues.has(val)} 
+                    onChange={() => handleCheckboxChange(val)}
+                    className="mr-2 rounded border-slate-300 cursor-pointer"
+                  />
+                  <span className="text-xs text-slate-600 truncate" title={val}>{val === '' ? '(Blanks)' : val}</span>
+                </label>
+              ))}
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
@@ -132,9 +156,9 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
   }
 
   return (
-    <div className="overflow-auto h-full w-full bg-white">
+    <div className="overflow-auto h-full w-full bg-white relative">
       <table className="w-full text-left border-collapse whitespace-nowrap">
-        <thead className="sticky top-0 bg-slate-100 z-10 shadow-sm border-b border-slate-200">
+        <thead className="sticky top-0 bg-slate-100 z-30 shadow-sm border-b border-slate-200">
           <tr>
             {columns.map(col => (
               <th key={col} className="px-3 py-2 border-r border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 relative align-middle">
@@ -171,7 +195,7 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
           {filteredData.length === 0 && (
             <tr>
               <td colSpan={columns.length} className="p-6 text-center text-slate-400 text-sm">
-                No matching records found.
+                No matching records found based on the current filters.
               </td>
             </tr>
           )}
@@ -191,11 +215,11 @@ export default function App() {
   const [loadingDrawings, setLoadingDrawings] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [sharepointPath, setSharepointPath] = useState([]);
   
   // File Metadata State
   const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
 
-  // Core Upload Logic
   const processFile = async (file) => {
     if (!file) return;
 
@@ -211,7 +235,6 @@ export default function App() {
       const result = await response.json();
       
       if (result.status === "success") {
-        // Fallback mechanism: if backend doesn't send columns, extract from the first row of data
         const fetchedCols = result.columns && result.columns.length > 0 
           ? result.columns 
           : (result.data && result.data.length > 0 ? Object.keys(result.data[0]) : []);
@@ -221,8 +244,8 @@ export default function App() {
         setDetailData([]);
         setSelectedParent(null);
         setDrawings([]);
+        setSharepointPath([]);
 
-        // Update Metadata
         const now = new Date();
         const formattedDate = now.toLocaleDateString() + ' ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         setFileMeta({
@@ -242,38 +265,45 @@ export default function App() {
     }
   };
 
-  // Button Upload Handler
   const handleFileUpload = (event) => {
     processFile(event.target.files[0]);
     event.target.value = ''; 
   };
 
-  // Drag and Drop Handlers
-  const onDragOver = (e) => {
+  // Drag and Drop Event Handlers (Preventing default browser download)
+  const onDragEnter = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(true);
   };
 
   const onDragLeave = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
+  };
+
+  const onDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
   };
 
   const onDrop = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       processFile(e.dataTransfer.files[0]);
     }
   };
 
-  // Master Table Row Click
   const onMasterRowClicked = useCallback((row) => {
     setSelectedParent(row);
     setDrawings([]);
     setSelectedDetail(null);
+    setSharepointPath([]);
 
-    // Dynamic Level Calculation
     const currentLevel = row.LEVEL !== undefined ? String(row.LEVEL) : null;
     let children = [];
     
@@ -284,26 +314,26 @@ export default function App() {
         d.PARENT === row.COMPONENT && Number(d.LEVEL) === Number(row.LEVEL) + 1
       );
     } else {
-      // Fallback if LEVEL column is missing, just match PARENT
       children = masterData.filter(d => d.PARENT === row.COMPONENT);
     }
     
     setDetailData(children);
   }, [masterData]);
 
-  // Detail Table Row Click
   const onDetailRowClicked = useCallback(async (row) => {
     setSelectedDetail(row);
     setLoadingDrawings(true);
+    setSharepointPath([]);
 
-    const category = row.Category || 'Unknown';
-    const component = row.COMPONENT || row.TOP_ASSY || 'Unknown';
+    const category = row.Category || 'Unknown Category';
+    const component = row.COMPONENT || row.TOP_ASSY || 'Unknown Component';
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/search?category=${category}&component=${component}`);
+      const res = await fetch(`http://127.0.0.1:8000/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
       const data = await res.json();
       if (data.status === "success") {
         setDrawings(data.results);
+        setSharepointPath(data.sharepoint_path || []);
       }
     } catch (error) {
       console.error("Fetch drawings failed:", error);
@@ -315,7 +345,7 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans text-sm">
       {/* Top Navigation */}
-      <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm shrink-0">
+      <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm shrink-0 z-20">
         <div className="flex items-center space-x-2">
           <Database size={22} className="text-blue-600" />
           <h1 className="text-lg font-bold text-slate-800 tracking-tight">BOM & Drawings Workspace</h1>
@@ -323,7 +353,7 @@ export default function App() {
         <div>
           <label className="flex items-center px-4 py-2 bg-blue-600 text-white font-medium rounded shadow hover:bg-blue-700 transition cursor-pointer">
             {uploading ? <Loader2 className="animate-spin mr-2" size={16} /> : <Upload size={16} className="mr-2" />}
-            <span>{uploading ? "Processing..." : "Upload BOM"}</span>
+            <span>{uploading ? "Processing..." : "Upload BOM File"}</span>
             <input type="file" accept=".csv, .xlsx" className="hidden" onChange={handleFileUpload} />
           </label>
         </div>
@@ -335,14 +365,13 @@ export default function App() {
         {/* Left Section (Master & Detail Tables) */}
         <div className="w-7/12 flex flex-col space-y-4">
           
-          {/* Master Table Area with Drag & Drop */}
           <div 
             className={`flex-1 bg-white rounded-lg shadow-sm border ${isDragging ? 'border-blue-500 bg-blue-50/50' : 'border-slate-200'} flex flex-col overflow-hidden relative transition-colors`}
+            onDragEnter={onDragEnter}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={onDrop}
           >
-            {/* Drag Overlay */}
             {isDragging && (
               <div className="absolute inset-0 z-50 flex items-center justify-center bg-blue-50/90 border-2 border-dashed border-blue-400 rounded-lg">
                 <div className="text-center">
@@ -352,8 +381,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Header with Metadata */}
-            <div className="px-4 py-3 border-b bg-slate-50 flex justify-between items-center">
+            <div className="px-4 py-3 border-b bg-slate-50 flex justify-between items-center z-10">
               <div className="flex items-center space-x-6">
                 <h2 className="font-semibold text-slate-700">1. Master BOM Table</h2>
                 {fileMeta.name && (
@@ -366,7 +394,7 @@ export default function App() {
                         type="text" 
                         value={fileMeta.version} 
                         onChange={(e) => setFileMeta({...fileMeta, version: e.target.value})}
-                        className="border border-slate-300 rounded px-2 py-0.5 w-16 text-center text-slate-700 font-medium focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                        className="border border-slate-300 rounded px-2 py-0.5 w-16 text-center text-slate-700 font-medium focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                       />
                     </div>
                   </div>
@@ -375,7 +403,6 @@ export default function App() {
               <span className="text-xs font-medium text-slate-500 bg-slate-200 px-2 py-1 rounded-full">Total: {masterData.length} Rows</span>
             </div>
 
-            {/* Table Area */}
             <div className="flex-1 overflow-hidden relative">
               {masterData.length > 0 ? (
                 <ExcelTable data={masterData} columns={columns} onRowClick={onMasterRowClicked} selectedRow={selectedParent} />
@@ -389,7 +416,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Detail Table Area */}
           <div className="h-1/3 min-h-[250px] bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col overflow-hidden">
              <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
               <div className="flex items-center">
@@ -428,10 +454,27 @@ export default function App() {
               </div>
             ) : (
               <div>
-                <div className="mb-4 p-4 bg-white rounded-lg shadow-sm border border-slate-200">
-                  <p className="text-xs text-slate-500 mb-1 uppercase tracking-wider">Currently Searching</p>
-                  <p className="font-mono font-bold text-xl text-blue-700">{selectedDetail.COMPONENT || 'Unknown Model'}</p>
-                </div>
+                {/* Beautiful Mock SharePoint Breadcrumb Path */}
+                {sharepointPath.length > 0 && (
+                  <div className="mb-4 bg-white border border-slate-200 rounded-lg shadow-sm p-3">
+                    <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Directory Path</p>
+                    <div className="flex flex-wrap items-center text-sm text-slate-600 gap-y-2">
+                      <HardDrive size={16} className="text-slate-400 mr-1 shrink-0" />
+                      {sharepointPath.map((segment, index) => (
+                        <React.Fragment key={index}>
+                          <span className={`flex items-center px-2 py-1 rounded ${index === sharepointPath.length - 1 ? 'bg-blue-50 text-blue-700 font-bold border border-blue-100' : 'hover:bg-slate-100 cursor-pointer'}`}>
+                            {index > 0 && index < sharepointPath.length - 1 && <FolderOpen size={14} className="mr-1.5 text-blue-500" />}
+                            {index === sharepointPath.length - 1 && <FileText size={14} className="mr-1.5 text-blue-600" />}
+                            {segment}
+                          </span>
+                          {index < sharepointPath.length - 1 && (
+                            <ChevronRight size={14} className="text-slate-300 shrink-0" />
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {loadingDrawings ? (
                    <div className="flex flex-col items-center justify-center py-12 text-blue-500">
