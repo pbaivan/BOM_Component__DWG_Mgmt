@@ -1,25 +1,51 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import pandas as pd
 import io
 import uvicorn
 import asyncio
-from typing import Optional
+import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger("bom_api")
+
+MAX_UPLOAD_BYTES = int(os.getenv("BOM_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
+
+
+def _get_allowed_origins() -> list[str]:
+    raw = os.getenv("BOM_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 app = FastAPI(title="BOM Platform API (Mock Phase)")
 
 # Configure CORS to allow React frontend to call the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_get_allowed_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Global variables to store parsed BOM data in memory
-global_bom_data = []
-global_columns = []
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"status": "error", "message": str(exc.detail)},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(_: Request, __: Exception):
+    logger.exception("Unhandled server exception.")
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "message": "Internal server error."},
+    )
 
 
 @app.get("/")
@@ -34,12 +60,22 @@ async def root():
 @app.post("/api/upload")
 async def upload_bom(file: UploadFile = File(...)):
     """Receive, parse, and extract data/columns from the uploaded Excel/CSV file."""
-    global global_bom_data, global_columns
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+
+    extension = Path(file.filename).suffix.lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Only .csv and .xlsx files are supported.")
+
     contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File is too large. Max allowed size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
 
     try:
         # Determine the correct engine based on file extension
-        if file.filename.endswith('.csv'):
+        if extension == '.csv':
             df = pd.read_csv(io.BytesIO(contents))
         else:
             df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
@@ -48,18 +84,23 @@ async def upload_bom(file: UploadFile = File(...)):
         df = df.fillna("")
 
         # Extract dynamic columns and row data
-        global_columns = df.columns.tolist()
-        global_bom_data = df.to_dict(orient="records")
+        columns = [str(col) for col in df.columns.tolist()]
+        rows = df.to_dict(orient="records")
 
         return {
             "status": "success",
-            "rows": len(global_bom_data),
-            "columns": global_columns,
-            "data": global_bom_data
+            "rows": len(rows),
+            "columns": columns,
+            "data": rows
         }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except (ValueError, pd.errors.ParserError):
+        logger.warning("Upload rejected due to invalid file format: %s", file.filename)
+        raise HTTPException(status_code=400, detail="Invalid or corrupted BOM file format.")
+    except Exception:
+        logger.exception("Unexpected error while processing upload.")
+        raise HTTPException(status_code=500, detail="Failed to process BOM file.")
 
 
 @app.get("/api/search")
