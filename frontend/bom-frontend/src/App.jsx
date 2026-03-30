@@ -1,21 +1,80 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Upload, FileText, Download, Eye, Loader2, Database, Filter, Search, ChevronRight, HardDrive, FolderOpen } from 'lucide-react';
 
+const normalizeBaseUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
+const API_BASE_CANDIDATES = Array.from(new Set([
+  normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL),
+  'http://127.0.0.1:8000',
+  'http://localhost:8000',
+].filter(Boolean)));
+const MAX_UPLOAD_BYTES = Number(import.meta.env.VITE_MAX_UPLOAD_BYTES || (100 * 1024 * 1024));
+
+const parseResponseBody = async (response) => {
+  const text = await response.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+};
+
+const fetchApiWithFallback = async (path, options = {}) => {
+  let lastNetworkError = null;
+
+  for (const baseUrl of API_BASE_CANDIDATES) {
+    try {
+      const response = await fetch(`${baseUrl}${path}`, options);
+      const payload = await parseResponseBody(response);
+
+      return {
+        ok: response.ok,
+        status: response.status,
+        payload,
+        baseUrl,
+      };
+    } catch (error) {
+      lastNetworkError = error;
+    }
+  }
+
+  const error = new Error('Unable to reach backend API.');
+  error.cause = lastNetworkError;
+  throw error;
+};
+
+const normalizeKey = (value) => String(value ?? '').trim();
+
+const parseLevel = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(String(value).trim());
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const useDebouncedValue = (value, delay = 180) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+};
+
 // Excel-like Filter Menu Component with Fixed Overlay approach to prevent closing
-const ColumnFilter = ({ column, data, filters, setFilters, isOpen, toggleMenu, closeMenu }) => {
+const ColumnFilter = ({ column, uniqueValues, filters, setFilters, isOpen, toggleMenu, closeMenu }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
-
-  const uniqueValues = useMemo(() => {
-    const values = new Set(data.map(row => String(row[column] || '')));
-    return Array.from(values).sort();
-  }, [data, column]);
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 180);
 
   const displayValues = useMemo(() => {
-    if (!searchTerm) return uniqueValues;
-    return uniqueValues.filter(v => v.toLowerCase().includes(searchTerm.toLowerCase()));
-  }, [uniqueValues, searchTerm]);
+    if (!debouncedSearchTerm) return uniqueValues;
+    const normalized = debouncedSearchTerm.toLowerCase();
+    return uniqueValues.filter(v => v.toLowerCase().includes(normalized));
+  }, [uniqueValues, debouncedSearchTerm]);
 
   const selectedValues = filters[column] || new Set(uniqueValues);
   const isAllSelected = selectedValues.size === uniqueValues.length;
@@ -131,14 +190,24 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
   const [filters, setFilters] = useState({});
   const [openMenuColumn, setOpenMenuColumn] = useState(null);
 
+  const uniqueValuesByColumn = useMemo(() => {
+    if (!columns || columns.length === 0) return {};
+    const cache = {};
+    columns.forEach(col => {
+      const values = new Set(data.map(row => String(row[col] || '')));
+      cache[col] = Array.from(values).sort();
+    });
+    return cache;
+  }, [data, columns]);
+
   useEffect(() => {
     if (!columns) return;
     const initialFilters = {};
     columns.forEach(col => {
-      initialFilters[col] = new Set(data.map(row => String(row[col] || '')));
+      initialFilters[col] = new Set(uniqueValuesByColumn[col] || []);
     });
     setFilters(initialFilters);
-  }, [data, columns]);
+  }, [columns, uniqueValuesByColumn]);
 
   const filteredData = useMemo(() => {
     if (!columns) return data;
@@ -164,10 +233,10 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
               <th key={col} className="px-3 py-2 border-r border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 relative align-middle">
                 <div className="flex items-center justify-between">
                   <span>{col}</span>
-                  <ColumnFilter 
-                    column={col} 
-                    data={data} 
-                    filters={filters} 
+                  <ColumnFilter
+                    column={col}
+                    uniqueValues={uniqueValuesByColumn[col] || []}
+                    filters={filters}
                     setFilters={setFilters}
                     isOpen={openMenuColumn === col}
                     toggleMenu={() => setOpenMenuColumn(openMenuColumn === col ? null : col)}
@@ -221,6 +290,35 @@ export default function App() {
   // File Metadata State
   const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
 
+  const hierarchyIndex = useMemo(() => {
+    const parentMap = new Map();
+    const componentLevelMap = new Map();
+    const componentMap = new Map();
+
+    masterData.forEach(row => {
+      const component = normalizeKey(row.COMPONENT || row.TOP_ASSY);
+      const parent = normalizeKey(row.PARENT);
+      const levelNumber = parseLevel(row.LEVEL);
+      const levelKey = levelNumber === null ? normalizeKey(row.LEVEL) : String(levelNumber);
+
+      if (parent) {
+        if (!parentMap.has(parent)) parentMap.set(parent, []);
+        parentMap.get(parent).push(row);
+      }
+
+      if (component) {
+        if (!componentMap.has(component)) componentMap.set(component, []);
+        componentMap.get(component).push(row);
+
+        const key = `${component}::${levelKey}`;
+        if (!componentLevelMap.has(key)) componentLevelMap.set(key, []);
+        componentLevelMap.get(key).push(row);
+      }
+    });
+
+    return { parentMap, componentLevelMap, componentMap };
+  }, [masterData]);
+
   useEffect(() => {
     // Prevent browser from opening/downloading files when dropped outside the intended drop zone.
     const preventWindowFileDrop = (event) => {
@@ -241,18 +339,29 @@ export default function App() {
   const processFile = async (file) => {
     if (!file) return;
 
+    const extension = file.name.toLowerCase().split('.').pop();
+    if (!['xlsx', 'csv'].includes(extension)) {
+      alert('Invalid file type. Please upload a .xlsx or .csv file.');
+      return;
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      alert(`File is too large. Max allowed size is ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.`);
+      return;
+    }
+
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/upload", {
+      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/upload', {
         method: "POST",
         body: formData,
       });
-      const result = await response.json();
+      const result = payload || {};
       
-      if (result.status === "success") {
+      if (ok && result.status === "success") {
         const fetchedCols = result.columns && result.columns.length > 0 
           ? result.columns 
           : (result.data && result.data.length > 0 ? Object.keys(result.data[0]) : []);
@@ -273,11 +382,12 @@ export default function App() {
         });
 
       } else {
-        alert("Parsing failed: " + result.message);
+        const reason = result.message || `HTTP ${status}`;
+        alert(`Upload failed: ${reason} (API: ${baseUrl})`);
       }
     } catch (error) {
       console.error("Upload error:", error);
-      alert("Cannot connect to backend server. Please ensure Python backend is running at http://127.0.0.1:8000");
+      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
     } finally {
       setUploading(false);
     }
@@ -333,21 +443,24 @@ export default function App() {
     setSelectedDetail(null);
     setSharepointPath([]);
 
-    const currentLevel = row.LEVEL !== undefined ? String(row.LEVEL) : null;
+    const currentLevel = parseLevel(row.LEVEL);
+    const component = normalizeKey(row.COMPONENT || row.TOP_ASSY);
     let children = [];
     
-    if (currentLevel === "0") {
-      children = masterData.filter(d => d.COMPONENT === row.COMPONENT && String(d.LEVEL) === "0");
-    } else if (currentLevel) {
-      children = masterData.filter(d => 
-        d.PARENT === row.COMPONENT && Number(d.LEVEL) === Number(row.LEVEL) + 1
-      );
+    if (currentLevel === 0) {
+      children = hierarchyIndex.componentLevelMap.get(`${component}::0`) || [];
+      if (children.length === 0 && normalizeKey(row.PARENT) === component) {
+        children = [row];
+      }
+    } else if (currentLevel !== null) {
+      const directChildren = hierarchyIndex.parentMap.get(component) || [];
+      children = directChildren.filter(d => parseLevel(d.LEVEL) === currentLevel + 1);
     } else {
-      children = masterData.filter(d => d.PARENT === row.COMPONENT);
+      children = hierarchyIndex.parentMap.get(component) || [];
     }
     
     setDetailData(children);
-  }, [masterData]);
+  }, [hierarchyIndex]);
 
   const onDetailRowClicked = useCallback(async (row) => {
     setSelectedDetail(row);
@@ -358,11 +471,14 @@ export default function App() {
     const component = row.COMPONENT || row.TOP_ASSY || 'Unknown Component';
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
-      const data = await res.json();
-      if (data.status === "success") {
+      const { ok, payload } = await fetchApiWithFallback(`/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
+      const data = payload || {};
+      if (ok && data.status === "success") {
         setDrawings(data.results);
         setSharepointPath(data.sharepoint_path || []);
+      } else {
+        setDrawings([]);
+        setSharepointPath([]);
       }
     } catch (error) {
       console.error("Fetch drawings failed:", error);
@@ -449,9 +565,9 @@ export default function App() {
              <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
               <div className="flex items-center">
                 <h2 className="font-semibold text-slate-700 mr-4">2. Required Child Components</h2>
-                {selectedParent && selectedParent.COMPONENT && (
+                {selectedParent && (selectedParent.COMPONENT || selectedParent.TOP_ASSY) && (
                   <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded border border-blue-200 shadow-sm">
-                    Target Parent: <span className="font-mono font-bold">{selectedParent.COMPONENT}</span> (Level {selectedParent.LEVEL})
+                    Target Parent: <span className="font-mono font-bold">{selectedParent.COMPONENT || selectedParent.TOP_ASSY}</span> (Level {selectedParent.LEVEL})
                   </span>
                 )}
               </div>
