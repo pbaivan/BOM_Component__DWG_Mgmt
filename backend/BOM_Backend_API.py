@@ -11,8 +11,12 @@ from pathlib import Path
 
 logger = logging.getLogger("bom_api")
 
-MAX_UPLOAD_BYTES = int(os.getenv("BOM_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+MAX_UPLOAD_BYTES = int(os.getenv("BOM_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
+LOCAL_ORIGIN_REGEX = os.getenv(
+    "BOM_ALLOWED_ORIGIN_REGEX",
+    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+)
 
 
 def _get_allowed_origins() -> list[str]:
@@ -25,6 +29,7 @@ app = FastAPI(title="BOM Platform API (Mock Phase)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_allowed_origins(),
+    allow_origin_regex=LOCAL_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,6 +59,14 @@ async def root():
     return {
         "message": "Success! BOM Backend is running.",
         "docs_url": "Visit /docs for API documentation"
+    }
+
+
+@app.get("/api/health")
+async def health():
+    return {
+        "status": "ok",
+        "service": "bom-backend",
     }
 
 
