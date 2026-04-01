@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef, useDeferredValue } from 'react';
 import { Upload, FileText, Download, Eye, Loader2, Database, Filter, Search, ChevronRight, HardDrive, FolderOpen } from 'lucide-react';
 
 const normalizeBaseUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
@@ -8,6 +8,8 @@ const API_BASE_CANDIDATES = Array.from(new Set([
   'http://localhost:8000',
 ].filter(Boolean)));
 const MAX_UPLOAD_BYTES = Number(import.meta.env.VITE_MAX_UPLOAD_BYTES || (100 * 1024 * 1024));
+const TABLE_ROW_HEIGHT = 36;
+const TABLE_OVERSCAN_ROWS = 12;
 
 const parseResponseBody = async (response) => {
   const text = await response.text();
@@ -58,11 +60,16 @@ const useDebouncedValue = (value, delay = 180) => {
 };
 
 // Excel-like Filter Menu Component with Fixed Overlay approach to prevent closing
-const ColumnFilter = ({ column, uniqueValues, filters, setFilters, isOpen, toggleMenu, closeMenu }) => {
+const ColumnFilter = ({ column, getUniqueValues, filters, setFilters, isOpen, toggleMenu, closeMenu }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const debouncedSearchTerm = useDebouncedValue(searchTerm, 180);
+
+  const uniqueValues = useMemo(() => {
+    if (!isOpen) return [];
+    return getUniqueValues(column);
+  }, [isOpen, getUniqueValues, column]);
 
   const displayValues = useMemo(() => {
     if (!debouncedSearchTerm) return uniqueValues;
@@ -70,24 +77,42 @@ const ColumnFilter = ({ column, uniqueValues, filters, setFilters, isOpen, toggl
     return uniqueValues.filter(v => v.toLowerCase().includes(normalized));
   }, [uniqueValues, debouncedSearchTerm]);
 
+  const isFiltered = Object.prototype.hasOwnProperty.call(filters, column);
   const selectedValues = filters[column] || new Set(uniqueValues);
-  const isAllSelected = selectedValues.size === uniqueValues.length;
+  const isAllSelected = !isFiltered || selectedValues.size === uniqueValues.length;
+
+  const updateFilterForColumn = (nextSet) => {
+    setFilters(prev => {
+      const next = { ...prev };
+      if (nextSet.size === uniqueValues.length) {
+        delete next[column];
+      } else {
+        next[column] = nextSet;
+      }
+      return next;
+    });
+  };
 
   const handleCheckboxChange = (val) => {
-    const newSelected = new Set(selectedValues);
+    const baseSelection = filters[column] ? new Set(filters[column]) : new Set(uniqueValues);
+    const newSelected = new Set(baseSelection);
     if (newSelected.has(val)) {
       newSelected.delete(val);
     } else {
       newSelected.add(val);
     }
-    setFilters(prev => ({ ...prev, [column]: newSelected }));
+    updateFilterForColumn(newSelected);
   };
 
   const handleSelectAll = () => {
     if (isAllSelected) {
       setFilters(prev => ({ ...prev, [column]: new Set() }));
     } else {
-      setFilters(prev => ({ ...prev, [column]: new Set(uniqueValues) }));
+      setFilters(prev => {
+        const next = { ...prev };
+        delete next[column];
+        return next;
+      });
     }
   };
 
@@ -125,7 +150,7 @@ const ColumnFilter = ({ column, uniqueValues, filters, setFilters, isOpen, toggl
       <button 
         ref={triggerRef}
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleMenu(); }}
-        className={`p-1 rounded transition-colors hover:bg-slate-200 ${selectedValues.size < uniqueValues.length ? 'text-blue-600 bg-blue-50' : 'text-slate-400'}`}
+        className={`p-1 rounded transition-colors hover:bg-slate-200 ${isFiltered ? 'text-blue-600 bg-blue-50' : 'text-slate-400'}`}
         title="Filter column"
       >
         <Filter size={14} />
@@ -183,43 +208,111 @@ const ColumnFilter = ({ column, uniqueValues, filters, setFilters, isOpen, toggl
 const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
   const [filters, setFilters] = useState({});
   const [openMenuColumn, setOpenMenuColumn] = useState(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const scrollContainerRef = useRef(null);
+  const scrollRafRef = useRef(null);
+  const uniqueValuesCacheRef = useRef(new Map());
+  const deferredFilters = useDeferredValue(filters);
 
-  const uniqueValuesByColumn = useMemo(() => {
-    if (!columns || columns.length === 0) return {};
-    const cache = {};
-    columns.forEach(col => {
-      const values = new Set(data.map(row => String(row[col] || '')));
-      cache[col] = Array.from(values).sort();
-    });
-    return cache;
+  const getUniqueValues = useCallback((column) => {
+    const cache = uniqueValuesCacheRef.current;
+    if (cache.has(column)) {
+      return cache.get(column);
+    }
+
+    const valueSet = new Set();
+    for (let i = 0; i < data.length; i += 1) {
+      valueSet.add(String(data[i][column] || ''));
+    }
+
+    const computedValues = Array.from(valueSet).sort();
+    cache.set(column, computedValues);
+    return computedValues;
+  }, [data]);
+
+  useEffect(() => {
+    uniqueValuesCacheRef.current = new Map();
+    setFilters({});
+    setOpenMenuColumn(null);
+    setScrollTop(0);
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
   }, [data, columns]);
 
   useEffect(() => {
-    if (!columns) return;
-    const initialFilters = {};
-    columns.forEach(col => {
-      initialFilters[col] = new Set(uniqueValuesByColumn[col] || []);
-    });
-    setFilters(initialFilters);
-  }, [columns, uniqueValuesByColumn]);
+    const updateViewport = () => {
+      if (scrollContainerRef.current) {
+        setViewportHeight(scrollContainerRef.current.clientHeight);
+      }
+    };
+
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, []);
+
+  const activeFilters = useMemo(() => {
+    return Object.entries(deferredFilters).filter(([, allowedValues]) => allowedValues instanceof Set);
+  }, [deferredFilters]);
 
   const filteredData = useMemo(() => {
-    if (!columns) return data;
+    if (!columns || activeFilters.length === 0) return data;
     return data.filter(row => {
-      return columns.every(col => {
-        const allowedValues = filters[col];
-        if (!allowedValues) return true;
-        return allowedValues.has(String(row[col] || ''));
-      });
+      for (let i = 0; i < activeFilters.length; i += 1) {
+        const [col, allowedValues] = activeFilters[i];
+        if (!allowedValues.has(String(row[col] || ''))) {
+          return false;
+        }
+      }
+      return true;
     });
-  }, [data, columns, filters]);
+  }, [data, columns, activeFilters]);
+
+  const totalRows = filteredData.length;
+  const visibleRowCount = Math.max(1, Math.ceil((viewportHeight || TABLE_ROW_HEIGHT) / TABLE_ROW_HEIGHT) + (TABLE_OVERSCAN_ROWS * 2));
+  const startIndex = Math.max(0, Math.floor(scrollTop / TABLE_ROW_HEIGHT) - TABLE_OVERSCAN_ROWS);
+  const endIndex = Math.min(totalRows, startIndex + visibleRowCount);
+
+  const topPaddingHeight = startIndex * TABLE_ROW_HEIGHT;
+  const bottomPaddingHeight = Math.max(0, (totalRows - endIndex) * TABLE_ROW_HEIGHT);
+
+  const visibleRows = useMemo(() => {
+    return filteredData.slice(startIndex, endIndex);
+  }, [filteredData, startIndex, endIndex]);
+
+  const handleScroll = useCallback((event) => {
+    const nextScrollTop = event.currentTarget.scrollTop;
+
+    if (scrollRafRef.current) {
+      cancelAnimationFrame(scrollRafRef.current);
+    }
+
+    scrollRafRef.current = requestAnimationFrame(() => {
+      setScrollTop(nextScrollTop);
+      scrollRafRef.current = null;
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+      }
+    };
+  }, []);
 
   if (!columns || columns.length === 0) {
     return null;
   }
 
   return (
-    <div className="overflow-auto h-full w-full bg-white relative">
+    <div
+      ref={scrollContainerRef}
+      onScroll={handleScroll}
+      className="overflow-auto h-full w-full bg-white relative"
+    >
       <table className="w-full text-left border-collapse whitespace-nowrap">
         <thead className="sticky top-0 bg-slate-100 z-30 shadow-sm border-b border-slate-200">
           <tr>
@@ -229,7 +322,7 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
                   <span>{col}</span>
                   <ColumnFilter
                     column={col}
-                    uniqueValues={uniqueValuesByColumn[col] || []}
+                    getUniqueValues={getUniqueValues}
                     filters={filters}
                     setFilters={setFilters}
                     isOpen={openMenuColumn === col}
@@ -242,20 +335,33 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
           </tr>
         </thead>
         <tbody>
-          {filteredData.map((row, i) => (
+          {topPaddingHeight > 0 && (
+            <tr>
+              <td colSpan={columns.length} style={{ height: `${topPaddingHeight}px` }} />
+            </tr>
+          )}
+          {visibleRows.map((row, i) => {
+            const rowIndex = startIndex + i;
+            return (
             <tr
-              key={i}
+              key={rowIndex}
               onClick={() => onRowClick(row)}
-              className={`cursor-pointer border-b border-slate-100 hover:bg-blue-50 transition-colors ${selectedRow === row ? 'bg-blue-100' : 'bg-white'}`}
+              className={`h-9 cursor-pointer border-b border-slate-100 hover:bg-blue-50 transition-colors ${selectedRow === row ? 'bg-blue-100' : 'bg-white'}`}
             >
               {columns.map(col => (
-                <td key={col} className="px-3 py-2 text-xs text-slate-700 border-r border-slate-100 last:border-r-0">
+                <td key={col} className="h-9 px-3 py-2 text-xs text-slate-700 border-r border-slate-100 last:border-r-0">
                   {row[col]}
                 </td>
               ))}
             </tr>
-          ))}
-          {filteredData.length === 0 && (
+            );
+          })}
+          {bottomPaddingHeight > 0 && (
+            <tr>
+              <td colSpan={columns.length} style={{ height: `${bottomPaddingHeight}px` }} />
+            </tr>
+          )}
+          {totalRows === 0 && (
             <tr>
               <td colSpan={columns.length} className="p-6 text-center text-slate-400 text-sm">
                 No matching records found based on the current filters.
@@ -284,6 +390,23 @@ export default function App() {
   
   // File Metadata State
   const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
+
+  const rowsByParent = useMemo(() => {
+    const grouped = new Map();
+
+    for (let i = 0; i < masterData.length; i += 1) {
+      const row = masterData[i];
+      const parentModel = normalizeKey(row.PARENT || row.TOP_ASSY || row.COMPONENT);
+      if (!parentModel) continue;
+
+      if (!grouped.has(parentModel)) {
+        grouped.set(parentModel, []);
+      }
+      grouped.get(parentModel).push(row);
+    }
+
+    return grouped;
+  }, [masterData]);
 
   useEffect(() => {
     // Prevent browser from opening/downloading files when dropped outside the intended drop zone.
@@ -413,11 +536,7 @@ export default function App() {
 
     // BOM-Tech rule: focus key is the selected row's PARENT model, then filter all rows with the same PARENT.
     const selectedParentModel = normalizeKey(row.PARENT || row.TOP_ASSY || row.COMPONENT);
-    let children = [];
-
-    if (selectedParentModel) {
-      children = masterData.filter(d => normalizeKey(d.PARENT) === selectedParentModel);
-    }
+    const children = selectedParentModel ? (rowsByParent.get(selectedParentModel) || []) : [];
 
     setDetailData(children);
 
@@ -496,7 +615,7 @@ export default function App() {
         setLoadingDrawings(false);
       }
     }
-  }, [masterData]);
+  }, [rowsByParent]);
 
   const onDetailRowClicked = useCallback((row) => {
     setSelectedDetail(row);
