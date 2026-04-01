@@ -19,6 +19,25 @@ LOCAL_ORIGIN_REGEX = os.getenv(
 )
 
 
+def _parse_bom_rows(contents: bytes, extension: str) -> tuple[list[str], list[dict]]:
+    """Parse BOM content in a worker thread to avoid blocking the event loop."""
+    stream = io.BytesIO(contents)
+
+    if extension == ".csv":
+        df = pd.read_csv(stream, keep_default_na=False, na_filter=False)
+    else:
+        df = pd.read_excel(
+            stream,
+            engine="openpyxl",
+            keep_default_na=False,
+            na_filter=False,
+        )
+
+    columns = [str(col) for col in df.columns.tolist()]
+    rows = df.to_dict(orient="records")
+    return columns, rows
+
+
 def _get_allowed_origins() -> list[str]:
     raw = os.getenv("BOM_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
@@ -87,18 +106,7 @@ async def upload_bom(file: UploadFile = File(...)):
         raise HTTPException(status_code=413, detail=f"File is too large. Max allowed size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
 
     try:
-        # Determine the correct engine based on file extension
-        if extension == '.csv':
-            df = pd.read_csv(io.BytesIO(contents))
-        else:
-            df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
-
-        # Replace NaN values with empty strings to avoid JSON serialization errors in React
-        df = df.fillna("")
-
-        # Extract dynamic columns and row data
-        columns = [str(col) for col in df.columns.tolist()]
-        rows = df.to_dict(orient="records")
+        columns, rows = await asyncio.to_thread(_parse_bom_rows, contents, extension)
 
         return {
             "status": "success",
@@ -108,7 +116,7 @@ async def upload_bom(file: UploadFile = File(...)):
         }
     except HTTPException:
         raise
-    except (ValueError, pd.errors.ParserError):
+    except (ValueError, pd.errors.ParserError, UnicodeDecodeError):
         logger.warning("Upload rejected due to invalid file format: %s", file.filename)
         raise HTTPException(status_code=400, detail="Invalid or corrupted BOM file format.")
     except Exception:
