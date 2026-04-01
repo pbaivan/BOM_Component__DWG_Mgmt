@@ -46,12 +46,6 @@ const fetchApiWithFallback = async (path, options = {}) => {
 
 const normalizeKey = (value) => String(value ?? '').trim();
 
-const parseLevel = (value) => {
-  if (value === null || value === undefined || value === '') return null;
-  const parsed = Number(String(value).trim());
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
 const useDebouncedValue = (value, delay = 180) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
 
@@ -286,38 +280,10 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [sharepointPath, setSharepointPath] = useState([]);
   const dragDepthRef = useRef(0);
+  const drawingRequestIdRef = useRef(0);
   
   // File Metadata State
   const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
-
-  const hierarchyIndex = useMemo(() => {
-    const parentMap = new Map();
-    const componentLevelMap = new Map();
-    const componentMap = new Map();
-
-    masterData.forEach(row => {
-      const component = normalizeKey(row.COMPONENT || row.TOP_ASSY);
-      const parent = normalizeKey(row.PARENT);
-      const levelNumber = parseLevel(row.LEVEL);
-      const levelKey = levelNumber === null ? normalizeKey(row.LEVEL) : String(levelNumber);
-
-      if (parent) {
-        if (!parentMap.has(parent)) parentMap.set(parent, []);
-        parentMap.get(parent).push(row);
-      }
-
-      if (component) {
-        if (!componentMap.has(component)) componentMap.set(component, []);
-        componentMap.get(component).push(row);
-
-        const key = `${component}::${levelKey}`;
-        if (!componentLevelMap.has(key)) componentLevelMap.set(key, []);
-        componentLevelMap.get(key).push(row);
-      }
-    });
-
-    return { parentMap, componentLevelMap, componentMap };
-  }, [masterData]);
 
   useEffect(() => {
     // Prevent browser from opening/downloading files when dropped outside the intended drop zone.
@@ -437,54 +403,103 @@ export default function App() {
     }
   };
 
-  const onMasterRowClicked = useCallback((row) => {
+  const onMasterRowClicked = useCallback(async (row) => {
+    const requestId = ++drawingRequestIdRef.current;
     setSelectedParent(row);
-    setDrawings([]);
     setSelectedDetail(null);
+    setDrawings([]);
     setSharepointPath([]);
-
-    const currentLevel = parseLevel(row.LEVEL);
-    const component = normalizeKey(row.COMPONENT || row.TOP_ASSY);
-    let children = [];
-    
-    if (currentLevel === 0) {
-      children = hierarchyIndex.componentLevelMap.get(`${component}::0`) || [];
-      if (children.length === 0 && normalizeKey(row.PARENT) === component) {
-        children = [row];
-      }
-    } else if (currentLevel !== null) {
-      const directChildren = hierarchyIndex.parentMap.get(component) || [];
-      children = directChildren.filter(d => parseLevel(d.LEVEL) === currentLevel + 1);
-    } else {
-      children = hierarchyIndex.parentMap.get(component) || [];
-    }
-    
-    setDetailData(children);
-  }, [hierarchyIndex]);
-
-  const onDetailRowClicked = useCallback(async (row) => {
-    setSelectedDetail(row);
     setLoadingDrawings(true);
-    setSharepointPath([]);
 
-    const category = row.Category || 'Unknown Category';
-    const component = row.COMPONENT || row.TOP_ASSY || 'Unknown Component';
+    // BOM-Tech rule: focus key is the selected row's PARENT model, then filter all rows with the same PARENT.
+    const selectedParentModel = normalizeKey(row.PARENT || row.TOP_ASSY || row.COMPONENT);
+    let children = [];
+
+    if (selectedParentModel) {
+      children = masterData.filter(d => normalizeKey(d.PARENT) === selectedParentModel);
+    }
+
+    setDetailData(children);
+
+    if (!selectedParentModel || children.length === 0) {
+      if (requestId === drawingRequestIdRef.current) {
+        setLoadingDrawings(false);
+      }
+      return;
+    }
+
+    const uniqueTargets = [];
+    const seenTargets = new Set();
+    children.forEach(item => {
+      const component = normalizeKey(item.COMPONENT || item.TOP_ASSY);
+      if (!component) return;
+
+      const category = normalizeKey(item.Category) || 'Unknown Category';
+      const key = `${category}::${component}`;
+      if (seenTargets.has(key)) return;
+      seenTargets.add(key);
+      uniqueTargets.push({ category, component });
+    });
+
+    if (uniqueTargets.length === 0) {
+      if (requestId === drawingRequestIdRef.current) {
+        setLoadingDrawings(false);
+      }
+      return;
+    }
 
     try {
-      const { ok, payload } = await fetchApiWithFallback(`/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
-      const data = payload || {};
-      if (ok && data.status === "success") {
-        setDrawings(data.results);
-        setSharepointPath(data.sharepoint_path || []);
-      } else {
+      const responseList = await Promise.all(uniqueTargets.map(async ({ category, component }) => {
+        const { ok, payload } = await fetchApiWithFallback(`/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
+        const data = payload || {};
+
+        if (!ok || data.status !== 'success') {
+          return { drawings: [], path: [] };
+        }
+
+        const enriched = (data.results || []).map(file => ({
+          ...file,
+          id: file.id || `${component}-${file.name || 'drawing'}-${file.version || ''}`,
+          sourceComponent: component,
+          sourceCategory: category,
+        }));
+
+        return {
+          drawings: enriched,
+          path: data.sharepoint_path || [],
+        };
+      }));
+
+      if (requestId !== drawingRequestIdRef.current) {
+        return;
+      }
+
+      const drawingMap = new Map();
+      responseList.flatMap(item => item.drawings).forEach(file => {
+        const key = `${file.id}::${file.sourceComponent}`;
+        if (!drawingMap.has(key)) {
+          drawingMap.set(key, file);
+        }
+      });
+
+      setDrawings(Array.from(drawingMap.values()));
+      const firstPath = responseList.find(item => Array.isArray(item.path) && item.path.length > 0)?.path || [];
+      setSharepointPath(firstPath);
+    } catch (error) {
+      if (requestId === drawingRequestIdRef.current) {
+        console.error('Fetch drawings failed:', error);
         setDrawings([]);
         setSharepointPath([]);
       }
-    } catch (error) {
-      console.error("Fetch drawings failed:", error);
     } finally {
-      setLoadingDrawings(false);
+      if (requestId === drawingRequestIdRef.current) {
+        setLoadingDrawings(false);
+      }
     }
+  }, [masterData]);
+
+  const onDetailRowClicked = useCallback((row) => {
+    setSelectedDetail(row);
   }, []);
 
   return (
@@ -565,9 +580,9 @@ export default function App() {
              <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
               <div className="flex items-center">
                 <h2 className="font-semibold text-slate-700 mr-4">2. Required Child Components</h2>
-                {selectedParent && (selectedParent.COMPONENT || selectedParent.TOP_ASSY) && (
+                {selectedParent && normalizeKey(selectedParent.PARENT || selectedParent.TOP_ASSY || selectedParent.COMPONENT) && (
                   <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded border border-blue-200 shadow-sm">
-                    Target Parent: <span className="font-mono font-bold">{selectedParent.COMPONENT || selectedParent.TOP_ASSY}</span> (Level {selectedParent.LEVEL})
+                    Target Parent: <span className="font-mono font-bold">{selectedParent.PARENT || selectedParent.TOP_ASSY || selectedParent.COMPONENT}</span>
                   </span>
                 )}
               </div>
@@ -592,10 +607,10 @@ export default function App() {
           </div>
           
           <div className="flex-1 p-4 overflow-auto bg-slate-50/50">
-            {!selectedDetail ? (
+            {!selectedParent ? (
               <div className="h-full flex flex-col items-center justify-center text-slate-400">
                 <FileText size={48} className="mb-4 text-slate-300" />
-                <p>Select a child component from the bottom-left table to view drawings.</p>
+                <p>Select a row from the top-left table to view all related drawings.</p>
               </div>
             ) : (
               <div>
@@ -638,6 +653,7 @@ export default function App() {
                             <div>
                               <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-700 transition-colors">{drawing.name}</p>
                               <div className="flex space-x-3 text-xs text-slate-500 mt-1">
+                                <span>Component: {drawing.sourceComponent || '-'}</span>
                                 <span>Revision: {drawing.version}</span>
                                 <span>{drawing.date}</span>
                               </div>
