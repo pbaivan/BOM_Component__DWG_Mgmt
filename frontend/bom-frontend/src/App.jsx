@@ -390,6 +390,67 @@ export default function App() {
   
   // File Metadata State
   const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
+  const [uploadedBOMFile, setUploadedBOMFile] = useState(null);
+  const [saveRecordId, setSaveRecordId] = useState('');
+  const [saveState, setSaveState] = useState({
+    status: 'draft',
+    file_saved: false,
+    metadata_saved: false,
+  });
+  const [savingAction, setSavingAction] = useState('');
+
+  const applySaveState = useCallback((payload) => {
+    if (!payload || typeof payload !== 'object') return;
+
+    if (payload.record_id) {
+      setSaveRecordId(payload.record_id);
+    }
+
+    if (payload.save_state) {
+      setSaveState({
+        status: payload.save_state.status || 'draft',
+        file_saved: Boolean(payload.save_state.file_saved),
+        metadata_saved: Boolean(payload.save_state.metadata_saved),
+      });
+    }
+  }, []);
+
+  const resetSaveState = useCallback(() => {
+    setSaveRecordId('');
+    setSaveState({
+      status: 'draft',
+      file_saved: false,
+      metadata_saved: false,
+    });
+    setSavingAction('');
+  }, []);
+
+  const saveStatusLabel = useMemo(() => {
+    if (saveState.file_saved && saveState.metadata_saved) {
+      return 'Paired Saved';
+    }
+    if (saveState.file_saved) {
+      return 'File Saved';
+    }
+    if (saveState.metadata_saved) {
+      return 'Metadata Saved';
+    }
+    return 'Draft';
+  }, [saveState]);
+
+  const saveStatusClass = useMemo(() => {
+    if (saveState.file_saved && saveState.metadata_saved) {
+      return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    }
+    if (saveState.file_saved || saveState.metadata_saved) {
+      return 'bg-amber-50 text-amber-700 border-amber-200';
+    }
+    return 'bg-slate-100 text-slate-600 border-slate-200';
+  }, [saveState]);
+
+  const canSaveFile = Boolean(saveRecordId && uploadedBOMFile);
+  const canSaveMetadata = Boolean(saveRecordId && fileMeta.name && fileMeta.date && fileMeta.version);
+  const canSaveBoth = canSaveFile && canSaveMetadata;
 
   const rowsByParent = useMemo(() => {
     const grouped = new Map();
@@ -439,6 +500,7 @@ export default function App() {
       return;
     }
 
+    resetSaveState();
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file);
@@ -469,6 +531,23 @@ export default function App() {
           date: formattedDate,
           version: '1.0'
         });
+        setUploadedBOMFile(file);
+
+        try {
+          const { ok: recordOk, payload: recordPayload, status: recordStatus, baseUrl: recordBaseUrl } = await fetchApiWithFallback('/api/save/new-record', {
+            method: 'POST',
+          });
+
+          if (recordOk && recordPayload?.status === 'success' && recordPayload?.record_id) {
+            applySaveState(recordPayload);
+          } else {
+            const reason = recordPayload?.message || `HTTP ${recordStatus}`;
+            alert(`BOM uploaded, but save record initialization failed: ${reason} (API: ${recordBaseUrl})`);
+          }
+        } catch (error) {
+          console.error('Create save record error:', error);
+          alert(`BOM uploaded, but save record initialization failed. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
+        }
 
       } else {
         const reason = result.message || `HTTP ${status}`;
@@ -486,6 +565,130 @@ export default function App() {
     processFile(event.target.files[0]);
     event.target.value = ''; 
   };
+
+  const saveBOMFileOnly = useCallback(async () => {
+    if (!saveRecordId || !uploadedBOMFile) {
+      alert('Please upload a BOM file first.');
+      return;
+    }
+
+    setSavingAction('file');
+    const formData = new FormData();
+    formData.append('record_id', saveRecordId);
+    formData.append('file', uploadedBOMFile);
+
+    try {
+      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/save/file', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (ok && payload?.status === 'success') {
+        applySaveState(payload);
+      } else {
+        const reason = payload?.message || `HTTP ${status}`;
+        alert(`Save BOM File failed: ${reason} (API: ${baseUrl})`);
+      }
+    } catch (error) {
+      console.error('Save BOM file error:', error);
+      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
+    } finally {
+      setSavingAction('');
+    }
+  }, [saveRecordId, uploadedBOMFile, applySaveState]);
+
+  const saveMetadataOnly = useCallback(async () => {
+    if (!saveRecordId) {
+      alert('Save record is not initialized. Please re-upload BOM file.');
+      return;
+    }
+
+    const normalizedFileName = String(fileMeta.name || '').trim();
+    const normalizedUploadDate = String(fileMeta.date || '').trim();
+    const normalizedVersion = String(fileMeta.version || '').trim() || '1.0';
+
+    if (!normalizedFileName || !normalizedUploadDate) {
+      alert('File Name and Upload Date are required to save metadata.');
+      return;
+    }
+
+    setSavingAction('metadata');
+    try {
+      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/save/metadata', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          record_id: saveRecordId,
+          file_name: normalizedFileName,
+          upload_date: normalizedUploadDate,
+          version: normalizedVersion,
+        }),
+      });
+
+      if (ok && payload?.status === 'success') {
+        applySaveState(payload);
+        if (normalizedVersion !== fileMeta.version) {
+          setFileMeta(prev => ({ ...prev, version: normalizedVersion }));
+        }
+      } else {
+        const reason = payload?.message || `HTTP ${status}`;
+        alert(`Save Metadata failed: ${reason} (API: ${baseUrl})`);
+      }
+    } catch (error) {
+      console.error('Save metadata error:', error);
+      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
+    } finally {
+      setSavingAction('');
+    }
+  }, [saveRecordId, fileMeta, applySaveState]);
+
+  const saveBoth = useCallback(async () => {
+    if (!saveRecordId || !uploadedBOMFile) {
+      alert('Please upload a BOM file first.');
+      return;
+    }
+
+    const normalizedFileName = String(fileMeta.name || '').trim();
+    const normalizedUploadDate = String(fileMeta.date || '').trim();
+    const normalizedVersion = String(fileMeta.version || '').trim() || '1.0';
+
+    if (!normalizedFileName || !normalizedUploadDate) {
+      alert('File Name and Upload Date are required to save metadata.');
+      return;
+    }
+
+    setSavingAction('both');
+    const formData = new FormData();
+    formData.append('record_id', saveRecordId);
+    formData.append('file_name', normalizedFileName);
+    formData.append('upload_date', normalizedUploadDate);
+    formData.append('version', normalizedVersion);
+    formData.append('file', uploadedBOMFile);
+
+    try {
+      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/save/both', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (ok && payload?.status === 'success') {
+        applySaveState(payload);
+        if (normalizedVersion !== fileMeta.version) {
+          setFileMeta(prev => ({ ...prev, version: normalizedVersion }));
+        }
+      } else {
+        const reason = payload?.message || `HTTP ${status}`;
+        alert(`Save Both failed: ${reason} (API: ${baseUrl})`);
+      }
+    } catch (error) {
+      console.error('Save both error:', error);
+      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
+    } finally {
+      setSavingAction('');
+    }
+  }, [saveRecordId, uploadedBOMFile, fileMeta, applySaveState]);
 
   // Drag and Drop Event Handlers (Preventing default browser download)
   const onDragEnter = (e) => {
@@ -664,7 +867,7 @@ export default function App() {
               <div className="flex items-center space-x-6">
                 <h2 className="font-semibold text-slate-700">1. Master BOM Table</h2>
                 {fileMeta.name && (
-                  <div className="flex items-center space-x-4 text-xs">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
                     <span className="text-slate-500">File: <span className="font-semibold text-slate-700">{fileMeta.name}</span></span>
                     <span className="text-slate-500">Upload Date: <span className="text-slate-700">{fileMeta.date}</span></span>
                     <div className="flex items-center">
@@ -676,6 +879,38 @@ export default function App() {
                         className="border border-slate-300 rounded px-2 py-0.5 w-16 text-center text-slate-700 font-medium focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                       />
                     </div>
+                    <button
+                      type="button"
+                      onClick={saveBOMFileOnly}
+                      disabled={!canSaveFile || Boolean(savingAction)}
+                      className="px-2.5 py-1 rounded border border-blue-200 bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                    >
+                      {savingAction === 'file' ? 'Saving...' : 'Save BOM File'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveMetadataOnly}
+                      disabled={!canSaveMetadata || Boolean(savingAction)}
+                      className="px-2.5 py-1 rounded border border-amber-200 bg-amber-50 text-amber-700 font-semibold hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                    >
+                      {savingAction === 'metadata' ? 'Saving...' : 'Save Metadata'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveBoth}
+                      disabled={!canSaveBoth || Boolean(savingAction)}
+                      className="px-2.5 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 font-semibold hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                    >
+                      {savingAction === 'both' ? 'Saving...' : 'Save Both'}
+                    </button>
+                    <span className={`px-2 py-1 rounded border font-semibold ${saveStatusClass}`}>
+                      {saveStatusLabel}
+                    </span>
+                    {saveRecordId && (
+                      <span className="px-2 py-1 rounded border border-slate-200 bg-white text-slate-500">
+                        Record: <span className="font-mono text-slate-700">{saveRecordId.slice(0, 8)}...</span>
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
