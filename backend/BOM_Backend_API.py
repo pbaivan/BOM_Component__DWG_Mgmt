@@ -598,6 +598,17 @@ def _save_file_and_metadata_record(
     }
 
 
+
+def _delete_save_record(record_id: str) -> None:
+    normalized_record_id = _normalize_record_id(record_id)
+    with _get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM bom_saved_records WHERE record_id = %s", (normalized_record_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="record_id not found.")
+        conn.commit()
+
+
 def _list_save_records(limit: int) -> list[dict[str, Any]]:
     with _get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -971,6 +982,21 @@ async def save_bom_file_and_metadata(
         raise HTTPException(status_code=500, detail="Failed to save BOM file and metadata.")
 
 
+
+@app.delete("/api/save/record/{record_id}")
+async def delete_save_record(record_id: str):
+    try:
+        await asyncio.to_thread(_delete_save_record, record_id)
+        return {
+            "status": "success",
+            "message": "BOM record and all associated tables have been permanently deleted.",
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to delete the BOM record.")
+        raise HTTPException(status_code=500, detail="Failed to delete the BOM record.")
+
 @app.get("/api/save/list")
 async def list_save_records(limit: int = Query(default=50, ge=1, le=200)):
     try:
@@ -987,7 +1013,7 @@ async def list_save_records(limit: int = Query(default=50, ge=1, le=200)):
 
 
 @app.get("/api/save/table/{record_id}")
-async def get_saved_bom_table(record_id: str, offset: int = Query(default=0, ge=0), limit: int = Query(default=500, ge=1, le=5000)):
+async def get_saved_bom_table(record_id: str, offset: int = Query(default=0, ge=0), limit: int = Query(default=100000, ge=1)):
     try:
         result = await asyncio.to_thread(_get_saved_bom_table, record_id, offset, limit)
         return {
