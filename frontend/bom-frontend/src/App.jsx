@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef, useDeferredValue } from 'react';
-import { Upload, FileText, Download, Eye, Loader2, Database, Filter, Search, ChevronRight, HardDrive, FolderOpen } from 'lucide-react';
+import { Upload, FileText, Download, Eye, Loader2, Database, Filter, Search, ChevronRight, HardDrive, FolderOpen, History } from 'lucide-react';
 
 const normalizeBaseUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
 const API_BASE_CANDIDATES = Array.from(new Set([
@@ -47,6 +47,17 @@ const fetchApiWithFallback = async (path, options = {}) => {
 };
 
 const normalizeKey = (value) => String(value ?? '').trim();
+
+const getCaselessValue = (obj, targetKey) => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const upperTarget = targetKey.toUpperCase();
+  for (const k in obj) {
+    if (k.toUpperCase() === upperTarget) {
+      return obj[k];
+    }
+  }
+  return undefined;
+};
 
 const useDebouncedValue = (value, delay = 180) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -398,6 +409,69 @@ export default function App() {
     metadata_saved: false,
   });
   const [savingAction, setSavingAction] = useState('');
+  
+  // History Modal State
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyRecords, setHistoryRecords] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  const loadHistory = async () => {
+    setLoadingHistory(true);
+    setShowHistory(true);
+    try {
+      const { ok, payload } = await fetchApiWithFallback('/api/save/list?limit=50');
+      if (ok && payload && payload.status === 'success') {
+        setHistoryRecords(payload.records || []);
+      }
+    } catch (err) {
+      console.error('List history err:', err);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const loadBOMTable = async (recordId, fileName, version) => {
+    try {
+      setUploading(true);
+      const { ok, payload } = await fetchApiWithFallback(`/api/save/table/${recordId}`);
+      if (ok && payload) {
+        setMasterData(payload.rows || []);
+        if (payload.columns) {
+          setColumns(payload.columns);
+        }
+        setFileMeta({
+          name: fileName || payload.table_state?.source_file_name || 'historical.xlsx',
+          date: payload.table_state?.saved_at ? new Date(payload.table_state.saved_at).toLocaleString() : 'Past',
+          version: version || '1.0'
+        });
+        setSaveRecordId(payload.record_id);
+        applySaveState(payload);
+        
+        setSelectedParent(null);
+        setSelectedDetail(null);
+        setDrawings([]);
+        setSharepointPath([]);
+        setDetailData([]);
+        
+        setShowHistory(false);
+      }
+    } catch (err) {
+      alert('Failed to load past BOM table.');
+      console.error(err);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const downloadBOMFile = async (recordId, fileName) => {
+    try {
+      // Direct window.open instead of fetch to let browser handle the binary download elegantly
+      window.open(`http://localhost:8000/api/save/file/${recordId}/download`, '_blank');
+    } catch (err) {
+      console.error('Download err:', err);
+      alert('Could not download file.');
+    }
+  };
 
   const applySaveState = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') return;
@@ -457,7 +531,8 @@ export default function App() {
 
     for (let i = 0; i < masterData.length; i += 1) {
       const row = masterData[i];
-      const parentModel = normalizeKey(row.PARENT || row.TOP_ASSY || row.COMPONENT);
+      const parentVal = getCaselessValue(row, 'PARENT');
+      const parentModel = normalizeKey(parentVal);
       if (!parentModel) continue;
 
       if (!grouped.has(parentModel)) {
@@ -533,20 +608,10 @@ export default function App() {
         });
         setUploadedBOMFile(file);
 
-        try {
-          const { ok: recordOk, payload: recordPayload, status: recordStatus, baseUrl: recordBaseUrl } = await fetchApiWithFallback('/api/save/new-record', {
-            method: 'POST',
-          });
-
-          if (recordOk && recordPayload?.status === 'success' && recordPayload?.record_id) {
-            applySaveState(recordPayload);
-          } else {
-            const reason = recordPayload?.message || `HTTP ${recordStatus}`;
-            alert(`BOM uploaded, but save record initialization failed: ${reason} (API: ${recordBaseUrl})`);
-          }
-        } catch (error) {
-          console.error('Create save record error:', error);
-          alert(`BOM uploaded, but save record initialization failed. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
+        if (result.record_id) {
+          applySaveState(result);
+        } else {
+          alert('BOM uploaded, but backend did not return a record ID for database persistence.');
         }
 
       } else {
@@ -738,7 +803,8 @@ export default function App() {
     setLoadingDrawings(true);
 
     // BOM-Tech rule: focus key is the selected row's PARENT model, then filter all rows with the same PARENT.
-    const selectedParentModel = normalizeKey(row.PARENT || row.TOP_ASSY || row.COMPONENT);
+    const parentVal = getCaselessValue(row, 'PARENT');
+    const selectedParentModel = normalizeKey(parentVal);
     const children = selectedParentModel ? (rowsByParent.get(selectedParentModel) || []) : [];
 
     setDetailData(children);
@@ -753,10 +819,12 @@ export default function App() {
     const uniqueTargets = [];
     const seenTargets = new Set();
     children.forEach(item => {
-      const component = normalizeKey(item.COMPONENT || item.TOP_ASSY);
+      const compVal = getCaselessValue(item, 'COMPONENT') || getCaselessValue(item, 'TOP_ASSY');
+      const component = normalizeKey(compVal);
       if (!component) return;
 
-      const category = normalizeKey(item.Category) || 'Unknown Category';
+      const catVal = getCaselessValue(item, 'Category');
+      const category = normalizeKey(catVal) || 'Unknown Category';
       const key = `${category}::${component}`;
       if (seenTargets.has(key)) return;
       seenTargets.add(key);
@@ -832,10 +900,19 @@ export default function App() {
           <Database size={22} className="text-blue-600" />
           <h1 className="text-lg font-bold text-slate-800 tracking-tight">BOM & Drawings Workspace</h1>
         </div>
-        <div>
+        <div className="flex items-center space-x-3">
+          <button 
+            type="button" 
+            onClick={loadHistory} 
+            className="flex items-center px-4 py-2 bg-slate-100 border border-slate-300 text-slate-700 font-medium rounded shadow-sm hover:bg-slate-200 transition cursor-pointer"
+          >
+            {loadingHistory ? <Loader2 className="animate-spin mr-2" size={16} /> : <History size={16} className="mr-2" />}
+            <span>Past Records</span>
+          </button>
+
           <label className="flex items-center px-4 py-2 bg-blue-600 text-white font-medium rounded shadow hover:bg-blue-700 transition cursor-pointer">
             {uploading ? <Loader2 className="animate-spin mr-2" size={16} /> : <Upload size={16} className="mr-2" />}
-            <span>{uploading ? "Processing..." : "Upload BOM File"}</span>
+            <span>{uploading ? "Processing..." : "Upload New BOM"}</span>
             <input type="file" accept=".csv, .xlsx" className="hidden" onChange={handleFileUpload} />
           </label>
         </div>
@@ -934,9 +1011,9 @@ export default function App() {
              <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
               <div className="flex items-center">
                 <h2 className="font-semibold text-slate-700 mr-4">2. Required Child Components</h2>
-                {selectedParent && normalizeKey(selectedParent.PARENT || selectedParent.TOP_ASSY || selectedParent.COMPONENT) && (
+                {selectedParent && normalizeKey(getCaselessValue(selectedParent, 'PARENT')) && (
                   <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded border border-blue-200 shadow-sm">
-                    Target Parent: <span className="font-mono font-bold">{selectedParent.PARENT || selectedParent.TOP_ASSY || selectedParent.COMPONENT}</span>
+                    Target Parent: <span className="font-mono font-bold">{getCaselessValue(selectedParent, 'PARENT')}</span>
                   </span>
                 )}
               </div>
@@ -1035,6 +1112,83 @@ export default function App() {
         </div>
 
       </div>
+
+      {showHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="bg-white w-3/4 max-w-5xl rounded-lg shadow-xl overflow-hidden flex flex-col h-4/5 max-h-[800px]">
+            <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
+              <h2 className="text-lg font-bold text-slate-800">Historical BOM Workspace</h2>
+              <button 
+                onClick={() => setShowHistory(false)}
+                className="text-slate-400 hover:text-slate-600 transition"
+              >
+                ✕ Close
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-auto p-4 bg-white">
+              {historyRecords.length === 0 ? (
+                 <div className="flex flex-col items-center justify-center p-12 text-slate-400 h-full">
+                    <Database size={48} className="mb-4 text-slate-300" />
+                    <p>No historical BOMs discovered in the central database.</p>
+                 </div>
+              ) : (
+                <div className="overflow-x-auto rounded border border-slate-200">
+                  <table className="w-full text-left border-collapse text-sm">
+                    <thead className="bg-slate-100 border-b border-slate-200">
+                      <tr>
+                        <th className="py-3 justify-center px-4 font-semibold text-slate-700 whitespace-nowrap">Status</th>
+                        <th className="py-3 px-4 font-semibold text-slate-700">Identified BOM Title</th>
+                        <th className="py-3 px-4 font-semibold text-slate-700">Lines</th>
+                        <th className="py-3 px-4 font-semibold text-slate-700">Uploaded timestamp</th>
+                        <th className="py-3 px-4 font-semibold text-slate-700 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {historyRecords.map(r => (
+                         <tr key={r.record_id} className="hover:bg-slate-50">
+                           <td className="py-2.5 px-4 whitespace-nowrap">
+                             {r.status === 'paired' ? 
+                               <span className="text-xs bg-emerald-100 border border-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded-full">Paired</span> : 
+                               <span className="text-xs bg-slate-200 border border-slate-300 text-slate-700 px-2 py-0.5 rounded-full">{r.status}</span>
+                             }
+                           </td>
+                           <td className="py-2.5 px-4 font-medium text-slate-800">
+                             {r.file_name || r.original_file_name || 'Legacy Data File'}
+                           </td>
+                           <td className="py-2.5 px-4 text-slate-600 tabular-nums">
+                              {r.bom_row_count || '?'}
+                           </td>
+                           <td className="py-2.5 px-4 text-slate-500 text-xs tabular-nums">
+                              {new Date(r.updated_at).toLocaleString()}
+                           </td>
+                           <td className="py-2.5 px-4 whitespace-nowrap text-right space-x-2">
+                             <button
+                                onClick={() => loadBOMTable(r.record_id, r.file_name, r.version)}
+                                className="px-3 py-1.5 text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 rounded hover:bg-blue-100 transition shadow-sm"
+                             >
+                               Load SQL Data Table
+                             </button>
+                             {r.file_saved && (
+                               <button
+                                  onClick={() => downloadBOMFile(r.record_id, r.original_file_name)}
+                                  className="px-3 py-1.5 text-xs font-semibold bg-slate-50 text-slate-700 border border-slate-300 rounded hover:bg-slate-100 transition shadow-sm"
+                               >
+                                 ⬇ Raw Excel .xlsx
+                               </button>
+                             )}
+                           </td>
+                         </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
