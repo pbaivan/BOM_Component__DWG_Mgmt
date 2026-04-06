@@ -473,6 +473,28 @@ export default function App() {
     }
   };
 
+  const deleteHistoryRecord = async (recordId) => {
+    if (!window.confirm('Are you sure you want to permanently delete this BOM record?')) {
+      return;
+    }
+    try {
+      setLoadingHistory(true);
+      const { ok, payload } = await fetchApiWithFallback(`/api/save/record/${recordId}`, {
+        method: 'DELETE',
+      });
+      if (ok && payload && payload.status === 'success') {
+        setHistoryRecords(prev => prev.filter(r => r.record_id !== recordId));
+      } else {
+        alert('Failed to delete the record.');
+      }
+    } catch (err) {
+      console.error('Delete history err:', err);
+      alert('Could not connect to the server to delete the record.');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
   const applySaveState = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') return;
 
@@ -501,15 +523,12 @@ export default function App() {
 
   const saveStatusLabel = useMemo(() => {
     if (saveState.file_saved && saveState.metadata_saved) {
-      return 'Paired Saved';
+      return '✔ Saved to Database';
     }
-    if (saveState.file_saved) {
-      return 'File Saved';
+    if (saveState.file_saved || saveState.metadata_saved) {
+      return 'Partial Save (Click Save to SQL)';
     }
-    if (saveState.metadata_saved) {
-      return 'Metadata Saved';
-    }
-    return 'Draft';
+    return '▶ Unsaved (Preview Only)';
   }, [saveState]);
 
   const saveStatusClass = useMemo(() => {
@@ -958,29 +977,14 @@ export default function App() {
                     </div>
                     <button
                       type="button"
-                      onClick={saveBOMFileOnly}
-                      disabled={!canSaveFile || Boolean(savingAction)}
-                      className="px-2.5 py-1 rounded border border-blue-200 bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
-                    >
-                      {savingAction === 'file' ? 'Saving...' : 'Save BOM File'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={saveMetadataOnly}
-                      disabled={!canSaveMetadata || Boolean(savingAction)}
-                      className="px-2.5 py-1 rounded border border-amber-200 bg-amber-50 text-amber-700 font-semibold hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
-                    >
-                      {savingAction === 'metadata' ? 'Saving...' : 'Save Metadata'}
-                    </button>
-                    <button
-                      type="button"
                       onClick={saveBoth}
                       disabled={!canSaveBoth || Boolean(savingAction)}
-                      className="px-2.5 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 font-semibold hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                      className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-blue-600 text-white font-bold hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition shadow-sm"
                     >
-                      {savingAction === 'both' ? 'Saving...' : 'Save Both'}
+                      <Database size={14} />
+                      <span>{savingAction === 'both' ? 'Saving...' : 'Save to SQL'}</span>
                     </button>
-                    <span className={`px-2 py-1 rounded border font-semibold ${saveStatusClass}`}>
+                    <span className={`px-2.5 py-1 rounded border font-semibold ${saveStatusClass}`}>
                       {saveStatusLabel}
                     </span>
                     {saveRecordId && (
@@ -1177,6 +1181,12 @@ export default function App() {
                                  ⬇ Raw Excel .xlsx
                                </button>
                              )}
+                             <button
+                                onClick={() => deleteHistoryRecord(r.record_id)}
+                                className="px-3 py-1.5 text-xs font-semibold bg-red-50 text-red-700 border border-red-200 rounded hover:bg-red-100 transition shadow-sm"
+                             >
+                               Delete
+                             </button>
                            </td>
                          </tr>
                       ))}
