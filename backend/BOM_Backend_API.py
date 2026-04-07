@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import pandas as pd
+import numpy as np
 import io
 import json
 import uvicorn
@@ -62,6 +63,13 @@ def _parse_bom_rows(contents: bytes, extension: str) -> tuple[list[str], list[di
     """Parse BOM content in a worker thread. Dynamically detects header row in Excel to avoid Unnamed columns."""
     stream = io.BytesIO(contents)
 
+    def get_excel_col_name(n):
+        res = ""
+        while n > 0:
+            n, remainder = divmod(n - 1, 26)
+            res = chr(65 + remainder) + res
+        return res
+
     if extension == ".csv":
         df = pd.read_csv(stream, keep_default_na=False, na_filter=False)
     else:
@@ -92,8 +100,11 @@ def _parse_bom_rows(contents: bytes, extension: str) -> tuple[list[str], list[di
     seen = set()
     for i, col in enumerate(df.columns.tolist()):
         c_str = str(col).strip()
+        excel_col_letter = get_excel_col_name(i + 1)
+        
         if "Unnamed" in c_str or not c_str:
-            c_str = f"Col_{i+1}"
+            c_str = f"column_{excel_col_letter}"
+            
         # Make column unique
         base = c_str
         count = 1
@@ -105,6 +116,12 @@ def _parse_bom_rows(contents: bytes, extension: str) -> tuple[list[str], list[di
         
     df.columns = final_cols
 
+    # Clean the dataframe: Replace NaN, Infinity, and Excel error strings (e.g. #N/A) with empty string
+    error_patterns = [r'^#N/A', r'^#DIV/0!', r'^#VALUE!', r'^#REF!', r'^#NAME\?', r'^#NUM!']
+    df = df.replace(to_replace=error_patterns, value="", regex=True)
+    df = df.replace([np.nan, float('inf'), float('-inf')], "")
+    df = df.fillna("")
+
     # Drop entirely empty rows gracefully (since we used keep_default_na=False, empty is "")
     if not df.empty:
         mask = (df != "").any(axis=1)
@@ -113,8 +130,6 @@ def _parse_bom_rows(contents: bytes, extension: str) -> tuple[list[str], list[di
     columns = final_cols
     rows = df.to_dict(orient="records")
     return columns, rows
-
-
 def _normalize_text(value: str, field_name: str) -> str:
     normalized = str(value or "").strip()
     if not normalized:
