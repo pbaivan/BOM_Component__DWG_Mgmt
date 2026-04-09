@@ -1102,139 +1102,223 @@ async def download_saved_bom_file(record_id: str):
 
 @app.get("/api/search")
 async def search_drawings(category: str, component: str):
-    """
-    Search for component drawings in SharePoint via Microsoft Graph API.
-    Resolves the folder dynamically if SHAREPOINT_TARGET_URL is provided.
-    Strictly filters returned files by the component name.
-    """
-    import msal
-    import httpx
-    import urllib.parse
+    """Search SharePoint files by category + component across configured target folders."""
     import base64
+    import httpx
+    import msal
+    import urllib.parse
     
-    TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID")
-    CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID")
-    CLIENT_SECRET = os.getenv("SHAREPOINT_CLIENT_SECRET")
-    
-    # 优先使用配置的显式 URL。如果只配置了 ID 也可以兼容。
-    DRIVE_ID = os.getenv("SHAREPOINT_DRIVE_ID")
-    FOLDER_ID = os.getenv("SHAREPOINT_DRAWINGS_FOLDER_ID")
-    TARGET_URL = os.getenv("SHAREPOINT_TARGET_URL")
-    
-    if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
-        logger.error("SharePoint AD credentials not fully configured in .env")
-        raise HTTPException(status_code=500, detail="SharePoint Graph API credentials not fully configured.")
-        
-    if not DRIVE_ID and not TARGET_URL:
-        logger.error("Neither SHAREPOINT_DRIVE_ID nor SHAREPOINT_TARGET_URL is provided in .env")
-        raise HTTPException(status_code=500, detail="No SharePoint Target URL or Drive ID provided in configuration.")
-    
-    if not component or len(component.strip()) < 2:
+    tenant_id = os.getenv("SHAREPOINT_TENANT_ID")
+    client_id = os.getenv("SHAREPOINT_CLIENT_ID")
+    client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET")
+    target_url_raw = os.getenv("SHAREPOINT_TARGET_URL", "")
+
+    if not all([tenant_id, client_id, client_secret]):
+        logger.error("SharePoint AD credentials are not fully configured in .env")
+        raise HTTPException(status_code=500, detail="SharePoint credentials are not fully configured.")
+
+    target_urls = [u.strip() for u in str(target_url_raw).split(",") if u.strip()]
+    if not target_urls:
+        logger.error("SHAREPOINT_TARGET_URL is empty in .env")
+        raise HTTPException(status_code=500, detail="No SharePoint target URL configured.")
+
+    normalized_category = str(category or "").strip()
+    normalized_component = str(component or "").strip()
+    if len(normalized_component) < 2:
         return {
             "status": "success",
-            "mock_category_folder": category,
-            "sharepoint_path": ["SharePoint", "Drawings"],
-            "results": []
+            "search_scopes": [],
+            "results": [],
         }
-        
-    component = component.strip()
-    
-    try:
-        # 1. 获取 App 级别的 Access Token
-        authority = f"https://login.microsoftonline.com/{TENANT_ID}"
-        app_msal = msal.ConfidentialClientApplication(
-            CLIENT_ID, authority=authority, client_credential=CLIENT_SECRET
+
+    def _extract_site_name(target_url: str) -> str:
+        parsed = urllib.parse.urlparse(target_url)
+        segments = [seg for seg in parsed.path.split("/") if seg]
+        lowered = [seg.lower() for seg in segments]
+        if "sites" in lowered:
+            idx = lowered.index("sites")
+            if idx + 1 < len(segments):
+                return urllib.parse.unquote(segments[idx + 1])
+        return parsed.netloc.split(".")[0] or "SharePoint"
+
+    authority = f"https://login.microsoftonline.com/{tenant_id}"
+    app_msal = msal.ConfidentialClientApplication(
+        client_id,
+        authority=authority,
+        client_credential=client_secret,
+    )
+    token = app_msal.acquire_token_silent(["https://graph.microsoft.com/.default"], account=None)
+    if not token:
+        token = await asyncio.to_thread(
+            app_msal.acquire_token_for_client,
+            scopes=["https://graph.microsoft.com/.default"],
         )
+    if "access_token" not in token:
+        logger.error("Failed to acquire Graph access token: %s", token)
+        raise HTTPException(status_code=500, detail="Failed to acquire Azure AD access token.")
 
-        # Silent cache check first
-        result = app_msal.acquire_token_silent(["https://graph.microsoft.com/.default"], account=None)
-        if not result:
-            result = await asyncio.to_thread(
-                app_msal.acquire_token_for_client, scopes=["https://graph.microsoft.com/.default"]
-            )
+    headers = {"Authorization": f"Bearer {token['access_token']}"}
+    drawings_by_key: dict[str, dict[str, Any]] = {}
+    scope_map: dict[str, dict[str, str]] = {}
 
-        if "access_token" not in result:
-            logger.error(f"MSAL Token error: {result.get('error_description', result)}")
-            raise HTTPException(status_code=500, detail="Failed to acquire Azure AD Access Token.")
-            
-        headers = {'Authorization': 'Bearer ' + result['access_token']}
-        
-        async with httpx.AsyncClient() as client:
-            # 2. 如果没有显式的 FOLDER_ID 但是提供了 URL，动态解析出目标图纸库
-            if not FOLDER_ID and TARGET_URL:
-                b64_url = base64.urlsafe_b64encode(TARGET_URL.encode()).decode().rstrip('=')
-                encoded_url = 'u!' + b64_url
-                res = await client.get(f'https://graph.microsoft.com/v1.0/shares/{encoded_url}/driveItem', headers=headers)
-                if res.status_code == 200:
-                    data = res.json()
-                    DRIVE_ID = data.get('parentReference', {}).get('driveId')
-                    FOLDER_ID = data.get('id')
-                else:
-                    logger.error(f"Cannot resolve TARGET_URL: {res.text}")
-                    raise HTTPException(status_code=500, detail="Invalid SHAREPOINT_TARGET_URL.")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for target_url in target_urls:
+                try:
+                    encoded = base64.urlsafe_b64encode(target_url.encode("utf-8")).decode("utf-8").rstrip("=")
+                    share_id = f"u!{encoded}"
+                    resolved = await client.get(
+                        f"https://graph.microsoft.com/v1.0/shares/{share_id}/driveItem",
+                        headers=headers,
+                    )
+                    if resolved.status_code != 200:
+                        logger.warning("Cannot resolve SharePoint URL %s: %s", target_url, resolved.text)
+                        continue
 
-            # 3. 动态获取目标库下的所有子文件夹（Category Mapping）
-            # 为了极致的安全，即便之前写死，这里也能动态从当前文件夹读取
-            category_id_map = {}
-            if FOLDER_ID and DRIVE_ID:
-                children_res = await client.get(f'https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{FOLDER_ID}/children', headers=headers)
-                if children_res.status_code == 200:
-                    kids = children_res.json().get('value', [])
-                    category_id_map = {c['name']: c['id'] for c in kids if 'folder' in c}
-            
-            # 定位搜索目录，若能找到分类文件夹就用分类分类文件夹的ID缩小范围，找不到就在根目录搜
-            target_folder_id = category_id_map.get(category, FOLDER_ID)
-            if not target_folder_id:
-               target_folder_id = FOLDER_ID
+                    resolved_item = resolved.json()
+                    drive_id = str(resolved_item.get("parentReference", {}).get("driveId") or "").strip()
+                    folder_id = str(resolved_item.get("id") or "").strip()
+                    root_name = str(resolved_item.get("name") or "Folder").strip()
+                    site_name = _extract_site_name(target_url)
+                    if not drive_id or not folder_id:
+                        continue
 
-            # 4. 构造搜索 Query 并调用 Graph API
-            encoded_query = urllib.parse.quote(component)
-            search_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{target_folder_id}/search(q='{encoded_query}')"
-            
-            search_res = await client.get(search_url, headers=headers)
-            if search_res.status_code != 200:
-                logger.error(f"Search API returned {search_res.status_code}: {search_res.text}")
-                raise HTTPException(status_code=500, detail="SharePoint Graph API search failed.")
-                
-            data = search_res.json()
-            items = data.get("value", [])
-            
-            drawings = []
-            for item in items:
-                # 跳过文件夹，只要文件
-                if "folder" in item:
-                    continue
-                
-                file_name = item.get("name", "")
-                
-                # 严格过滤：必须确保查阅出的文件名里确实包含了型号，避免全文搜索引擎胡乱匹配
-                if component.lower() not in file_name.lower():
-                    continue
-                
-                drawings.append({
-                    "id": item.get("id"),
-                    "name": file_name,
-                    "version": "Live",
-                    "type": "PDF" if file_name.lower().endswith(".pdf") else "Model",
-                    "date": item.get("lastModifiedDateTime", "")[:10] if item.get("lastModifiedDateTime") else "Unknown",
-                    "url": item.get("webUrl"),
-                    "download_url": item.get("@microsoft.graph.downloadUrl")
-                })
-                
-            return {
-                "status": "success",
-                "mock_category_folder": category,
-                "sharepoint_path": [
-                    "SharePoint URL Root", "Drawings", category if category in category_id_map else f"Any ({category})", component
-                ],
-                "results": drawings
-            }
-            
+                    children_res = await client.get(
+                        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{folder_id}/children",
+                        headers=headers,
+                    )
+                    category_map: dict[str, str] = {}
+                    if children_res.status_code == 200:
+                        children = children_res.json().get("value", [])
+                        for child in children:
+                            if "folder" in child:
+                                name = str(child.get("name") or "").strip()
+                                if name and child.get("id"):
+                                    category_map[name.lower()] = str(child["id"])
+
+                    target_folder_id = category_map.get(normalized_category.lower(), folder_id)
+                    scope_key = f"{site_name}|{root_name}|{normalized_category}"
+                    scope_map[scope_key] = {
+                        "site": site_name,
+                        "root": root_name,
+                        "category": normalized_category,
+                    }
+
+                    query = urllib.parse.quote(normalized_component)
+                    search_res = await client.get(
+                        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{target_folder_id}/search(q='{query}')",
+                        headers=headers,
+                    )
+                    if search_res.status_code != 200:
+                        logger.warning("Graph search failed for scope %s: %s", scope_key, search_res.text)
+                        continue
+
+                    for item in search_res.json().get("value", []):
+                        if "folder" in item:
+                            continue
+                        file_name = str(item.get("name") or "").strip()
+                        if not file_name:
+                            continue
+                        if normalized_component.lower() not in file_name.lower():
+                            continue
+
+                        item_id = str(item.get("id") or "").strip()
+                        if not item_id:
+                            continue
+
+                        ext = Path(file_name).suffix.lower().lstrip(".")
+                        file_type = (ext.upper() if ext else "FILE")[:8]
+                        key = f"{drive_id}:{item_id}:{normalized_component}"
+                        drawings_by_key[key] = {
+                            "id": key,
+                            "item_id": item_id,
+                            "drive_id": drive_id,
+                            "name": file_name,
+                            "version": "Live",
+                            "type": file_type,
+                            "date": str(item.get("lastModifiedDateTime") or "")[:10] or "Unknown",
+                            "source_site": site_name,
+                            "source_root": root_name,
+                            "source_category": normalized_category,
+                            "web_url": str(item.get("webUrl") or ""),
+                        }
+                except Exception:
+                    logger.exception("Unexpected error while searching target URL: %s", target_url)
+
+        return {
+            "status": "success",
+            "search_scopes": list(scope_map.values()),
+            "results": list(drawings_by_key.values()),
+        }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("SharePoint search implementation error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="SharePoint search failed.")
+
+
+@app.get("/api/sp_file")
+async def serve_sharepoint_file(
+    drive_id: str,
+    item_id: str,
+    filename: str = Query(default="file"),
+    mode: str = Query(default="preview", pattern="^(preview|download)$"),
+):
+    """Serve SharePoint file content through backend for stable preview/download behavior."""
+    import httpx
+    import msal
+
+    tenant_id = os.getenv("SHAREPOINT_TENANT_ID")
+    client_id = os.getenv("SHAREPOINT_CLIENT_ID")
+    client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET")
+    if not all([tenant_id, client_id, client_secret]):
+        raise HTTPException(status_code=500, detail="SharePoint credentials are not fully configured.")
+
+    safe_drive = str(drive_id or "").strip()
+    safe_item = str(item_id or "").strip()
+    if not safe_drive or not safe_item:
+        raise HTTPException(status_code=400, detail="drive_id and item_id are required.")
+
+    authority = f"https://login.microsoftonline.com/{tenant_id}"
+    app_msal = msal.ConfidentialClientApplication(
+        client_id,
+        authority=authority,
+        client_credential=client_secret,
+    )
+    token = app_msal.acquire_token_silent(["https://graph.microsoft.com/.default"], account=None)
+    if not token:
+        token = await asyncio.to_thread(
+            app_msal.acquire_token_for_client,
+            scopes=["https://graph.microsoft.com/.default"],
+        )
+    if "access_token" not in token:
+        raise HTTPException(status_code=500, detail="Failed to acquire Azure AD access token.")
+
+    headers = {"Authorization": f"Bearer {token['access_token']}"}
+    content_url = f"https://graph.microsoft.com/v1.0/drives/{safe_drive}/items/{safe_item}/content"
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+            file_res = await client.get(content_url, headers=headers)
+
+        if file_res.status_code != 200:
+            logger.error("Failed to fetch SharePoint file content: %s", file_res.text)
+            raise HTTPException(status_code=502, detail="Failed to fetch file from SharePoint.")
+
+        safe_name = _safe_filename(filename)
+        content_type = file_res.headers.get("Content-Type") or _guess_mime_type(safe_name)
+        disposition = "attachment" if mode == "download" else "inline"
+
+        return Response(
+            content=file_res.content,
+            media_type=content_type,
+            headers={"Content-Disposition": f'{disposition}; filename="{safe_name}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("SharePoint file proxy failed")
+        raise HTTPException(status_code=500, detail="Failed to stream SharePoint file.")
 
 if __name__ == "__main__":
     uvicorn.run("BOM_Backend_API:app", host="0.0.0.0", port=8000, reload=True)
