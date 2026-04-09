@@ -396,7 +396,8 @@ export default function App() {
   const [loadingDrawings, setLoadingDrawings] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [sharepointPath, setSharepointPath] = useState([]);
+  const [directoryScopes, setDirectoryScopes] = useState([]);
+  const [componentTargets, setComponentTargets] = useState([]);
   const dragDepthRef = useRef(0);
   const drawingRequestIdRef = useRef(0);
   
@@ -451,7 +452,8 @@ export default function App() {
         setSelectedParent(null);
         setSelectedDetail(null);
         setDrawings([]);
-        setSharepointPath([]);
+        setDirectoryScopes([]);
+        setComponentTargets([]);
         setMissingComponents([]);
         setDetailData([]);
         
@@ -618,7 +620,8 @@ export default function App() {
         setDetailData([]);
         setSelectedParent(null);
         setDrawings([]);
-        setSharepointPath([]);
+        setDirectoryScopes([]);
+        setComponentTargets([]);
         setMissingComponents([]);
 
         const now = new Date();
@@ -816,12 +819,52 @@ export default function App() {
     }
   };
 
+  const previewDrawingFile = useCallback((drawing) => {
+    if (!drawing?.drive_id || !drawing?.item_id) {
+      return;
+    }
+
+    const base = API_BASE_CANDIDATES[0];
+    const previewUrl = `${base}/api/sp_file?drive_id=${encodeURIComponent(drawing.drive_id)}&item_id=${encodeURIComponent(drawing.item_id)}&filename=${encodeURIComponent(drawing.name || 'drawing')}&mode=preview`;
+    window.open(previewUrl, '_blank', 'noopener,noreferrer');
+  }, []);
+
+  const downloadDrawingFile = useCallback(async (drawing) => {
+    if (!drawing?.drive_id || !drawing?.item_id) {
+      return;
+    }
+
+    try {
+      const base = API_BASE_CANDIDATES[0];
+      const downloadUrl = `${base}/api/sp_file?drive_id=${encodeURIComponent(drawing.drive_id)}&item_id=${encodeURIComponent(drawing.item_id)}&filename=${encodeURIComponent(drawing.name || 'drawing')}&mode=download`;
+      const response = await fetch(downloadUrl);
+
+      if (!response.ok) {
+        throw new Error(`Download failed (HTTP ${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = drawing.name || 'drawing';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      console.error('Download drawing failed:', error);
+      alert('Failed to download this file. Please try again.');
+    }
+  }, []);
+
   const onMasterRowClicked = useCallback(async (row) => {
     const requestId = ++drawingRequestIdRef.current;
     setSelectedParent(row);
     setSelectedDetail(null);
     setDrawings([]);
-    setSharepointPath([]);
+    setDirectoryScopes([]);
+    setComponentTargets([]);
     setMissingComponents([]);
     setLoadingDrawings(true);
 
@@ -867,7 +910,7 @@ export default function App() {
         const data = payload || {};
 
         if (!ok || data.status !== 'success') {
-          return { drawings: [], path: [] };
+          return { drawings: [], scopes: [] };
         }
 
         const enriched = (data.results || []).map(file => ({
@@ -879,7 +922,7 @@ export default function App() {
 
         return {
           drawings: enriched,
-          path: data.sharepoint_path || [],
+          scopes: data.search_scopes || [],
         };
       }));
 
@@ -897,17 +940,28 @@ export default function App() {
 
       const allDrawings = Array.from(drawingMap.values());
       setDrawings(allDrawings);
-      
-      // Build an aggregated breadcrumb path
-      const allCategories = Array.from(new Set(uniqueTargets.map(t => t.category))).join(', ');
-      const allComponents = Array.from(new Set(uniqueTargets.map(t => t.component))).join(', ');
-      
-      const firstResponsePath = responseList.find(item => Array.isArray(item.path) && item.path.length > 0)?.path;
-      if (firstResponsePath && firstResponsePath.length >= 3) {
-        setSharepointPath([firstResponsePath[0], firstResponsePath[1], allCategories, allComponents]);
-      } else {
-        setSharepointPath(['OneFactory', 'Drawings', allCategories, allComponents]);
-      }
+
+      // Build scoped directory paths: OneFactory -> Drawings/STEP Files -> Category
+      const scopeMap = new Map();
+      responseList.flatMap(item => item.scopes || []).forEach(scope => {
+        const site = normalizeKey(scope.site);
+        const root = normalizeKey(scope.root);
+        const scopeCategory = normalizeKey(scope.category);
+        if (!site || !root || !scopeCategory) return;
+
+        const key = `${site}::${root}::${scopeCategory}`;
+        if (!scopeMap.has(key)) {
+          scopeMap.set(key, {
+            site,
+            root,
+            category: scopeCategory,
+          });
+        }
+      });
+      setDirectoryScopes(Array.from(scopeMap.values()));
+
+      const uniqueComponents = Array.from(new Set(uniqueTargets.map(target => target.component)));
+      setComponentTargets(uniqueComponents);
 
       // Check which components had no drawings found
       const foundComponents = new Set(allDrawings.map(d => d.sourceComponent));
@@ -918,7 +972,8 @@ export default function App() {
       if (requestId === drawingRequestIdRef.current) {
         console.error('Fetch drawings failed:', error);
         setDrawings([]);
-        setSharepointPath([]);
+        setDirectoryScopes([]);
+        setComponentTargets([]);
         setMissingComponents([]);
       }
     } finally {
@@ -1059,7 +1114,7 @@ export default function App() {
         {/* Right Section (Drawings) */}
         <div className="w-5/12 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col overflow-hidden">
           <div className="px-4 py-3 border-b bg-slate-50">
-            <h2 className="font-semibold text-slate-700">3. SharePoint Drawings (Mock API)</h2>
+            <h2 className="font-semibold text-slate-700">3. SharePoint Drawings</h2>
           </div>
           
           <div className="flex-1 p-4 overflow-auto bg-slate-50/50">
@@ -1071,23 +1126,41 @@ export default function App() {
             ) : (
               <div>
                 {/* Beautiful Mock SharePoint Breadcrumb Path */}
-                {sharepointPath.length > 0 && (
+                {(directoryScopes.length > 0 || componentTargets.length > 0) && (
                   <div className="mb-4 bg-white border border-slate-200 rounded-lg shadow-sm p-3">
                     <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Directory Path</p>
-                    <div className="flex flex-wrap items-center text-sm text-slate-600 gap-y-2">
-                      <HardDrive size={16} className="text-slate-400 mr-1 shrink-0" />
-                      {sharepointPath.map((segment, index) => (
-                        <React.Fragment key={index}>
-                          <span className={`flex items-center px-2 py-1 rounded ${index === sharepointPath.length - 1 ? 'bg-blue-50 text-blue-700 font-bold border border-blue-100' : 'hover:bg-slate-100 cursor-pointer'}`}>
-                            {index > 0 && index < sharepointPath.length - 1 && <FolderOpen size={14} className="mr-1.5 text-blue-500" />}
-                            {index === sharepointPath.length - 1 && <FileText size={14} className="mr-1.5 text-blue-600" />}
-                            {segment}
+                    <div className="space-y-2 text-sm text-slate-600">
+                      {directoryScopes.map((scope) => (
+                        <div key={`${scope.site}-${scope.root}-${scope.category}`} className="flex flex-wrap items-center gap-y-1">
+                          <HardDrive size={16} className="text-slate-400 mr-1 shrink-0" />
+                          <span className="flex items-center px-2 py-1 rounded hover:bg-slate-100 cursor-pointer">{scope.site}</span>
+                          <ChevronRight size={14} className="text-slate-300 shrink-0" />
+                          <span className="flex items-center px-2 py-1 rounded hover:bg-slate-100 cursor-pointer">
+                            <FolderOpen size={14} className="mr-1.5 text-blue-500" />
+                            {scope.root}
                           </span>
-                          {index < sharepointPath.length - 1 && (
-                            <ChevronRight size={14} className="text-slate-300 shrink-0" />
-                          )}
-                        </React.Fragment>
+                          <ChevronRight size={14} className="text-slate-300 shrink-0" />
+                          <span className="flex items-center px-2 py-1 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100">
+                            <FolderOpen size={14} className="mr-1.5 text-blue-500" />
+                            {scope.category}
+                          </span>
+                          <ChevronRight size={14} className="text-slate-300 shrink-0" />
+                        </div>
                       ))}
+
+                      {componentTargets.length > 0 && (
+                        <div className="pt-2 border-t border-slate-100">
+                          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Components</p>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {componentTargets.map((component) => (
+                              <span key={component} className="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100">
+                                <FileText size={13} className="mr-1" />
+                                {component}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1132,12 +1205,12 @@ export default function App() {
                               </div>
                            </div>
                            <div className="flex space-x-2 shrink-0">
-                              <a href={drawing.url} target="_blank" rel="noopener noreferrer" className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Preview Online">
+                              <button onClick={() => previewDrawingFile(drawing)} className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Preview Online">
                                 <Eye size={18} />
-                              </a>
-                              <a href={drawing.download_url || drawing.url} target="_blank" rel="noopener noreferrer" className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Download">
+                              </button>
+                              <button onClick={() => downloadDrawingFile(drawing)} className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Download">
                                 <Download size={18} />
-                              </a>
+                              </button>
                            </div>
                         </div>
                       ))}
