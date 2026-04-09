@@ -1204,27 +1204,18 @@ async def search_drawings(category: str, component: str):
                         "category": normalized_category,
                     }
 
-                    query = urllib.parse.quote(normalized_component)
-                    search_res = await client.get(
-                        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{target_folder_id}/search(q='{query}')",
-                        headers=headers,
-                    )
-                    if search_res.status_code != 200:
-                        logger.warning("Graph search failed for scope %s: %s", scope_key, search_res.text)
-                        continue
+                    component_lc = normalized_component.lower()
 
-                    for item in search_res.json().get("value", []):
-                        if "folder" in item:
-                            continue
+                    def _append_matched_file(item: dict[str, Any]) -> None:
                         file_name = str(item.get("name") or "").strip()
                         if not file_name:
-                            continue
-                        if normalized_component.lower() not in file_name.lower():
-                            continue
+                            return
+                        if component_lc not in file_name.lower():
+                            return
 
                         item_id = str(item.get("id") or "").strip()
                         if not item_id:
-                            continue
+                            return
 
                         ext = Path(file_name).suffix.lower().lstrip(".")
                         file_type = (ext.upper() if ext else "FILE")[:8]
@@ -1242,6 +1233,64 @@ async def search_drawings(category: str, component: str):
                             "source_category": normalized_category,
                             "web_url": str(item.get("webUrl") or ""),
                         }
+
+                    # Pass 1: Graph index-based search (fast, but may miss some binary formats)
+                    query = urllib.parse.quote(normalized_component)
+                    search_res = await client.get(
+                        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{target_folder_id}/search(q='{query}')",
+                        headers=headers,
+                    )
+                    if search_res.status_code == 200:
+                        for item in search_res.json().get("value", []):
+                            if "folder" in item:
+                                continue
+                            _append_matched_file(item)
+                    else:
+                        logger.warning("Graph search failed for scope %s: %s", scope_key, search_res.text)
+
+                    # Pass 2: Folder traversal fallback to include all file formats by filename match.
+                    pending_folders = [target_folder_id]
+                    visited_folders: set[str] = set()
+                    max_folder_scan = 1200
+                    scanned_count = 0
+
+                    while pending_folders and scanned_count < max_folder_scan:
+                        current_folder = pending_folders.pop(0)
+                        if not current_folder or current_folder in visited_folders:
+                            continue
+
+                        visited_folders.add(current_folder)
+                        scanned_count += 1
+
+                        next_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{current_folder}/children?$top=200"
+                        while next_url:
+                            children_page = await client.get(next_url, headers=headers)
+                            if children_page.status_code != 200:
+                                logger.warning(
+                                    "Graph children listing failed for scope %s folder %s: %s",
+                                    scope_key,
+                                    current_folder,
+                                    children_page.text,
+                                )
+                                break
+
+                            page_payload = children_page.json()
+                            for child in page_payload.get("value", []):
+                                if "folder" in child:
+                                    child_folder_id = str(child.get("id") or "").strip()
+                                    if child_folder_id and child_folder_id not in visited_folders:
+                                        pending_folders.append(child_folder_id)
+                                    continue
+                                _append_matched_file(child)
+
+                            next_url = page_payload.get("@odata.nextLink")
+
+                    if scanned_count >= max_folder_scan:
+                        logger.warning(
+                            "Folder traversal stopped at cap (%s) for scope %s",
+                            max_folder_scan,
+                            scope_key,
+                        )
                 except Exception:
                     logger.exception("Unexpected error while searching target URL: %s", target_url)
 
