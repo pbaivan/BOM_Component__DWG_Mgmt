@@ -392,6 +392,7 @@ export default function App() {
   const [selectedParent, setSelectedParent] = useState(null);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [drawings, setDrawings] = useState([]);
+  const [missingComponents, setMissingComponents] = useState([]);
   const [loadingDrawings, setLoadingDrawings] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -451,6 +452,7 @@ export default function App() {
         setSelectedDetail(null);
         setDrawings([]);
         setSharepointPath([]);
+        setMissingComponents([]);
         setDetailData([]);
         
         setShowHistory(false);
@@ -617,6 +619,7 @@ export default function App() {
         setSelectedParent(null);
         setDrawings([]);
         setSharepointPath([]);
+        setMissingComponents([]);
 
         const now = new Date();
         const formattedDate = now.toLocaleDateString() + ' ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -819,6 +822,7 @@ export default function App() {
     setSelectedDetail(null);
     setDrawings([]);
     setSharepointPath([]);
+    setMissingComponents([]);
     setLoadingDrawings(true);
 
     // BOM-Tech rule: focus key is the selected row's PARENT model, then filter all rows with the same PARENT.
@@ -891,14 +895,31 @@ export default function App() {
         }
       });
 
-      setDrawings(Array.from(drawingMap.values()));
-      const firstPath = responseList.find(item => Array.isArray(item.path) && item.path.length > 0)?.path || [];
-      setSharepointPath(firstPath);
+      const allDrawings = Array.from(drawingMap.values());
+      setDrawings(allDrawings);
+      
+      // Build an aggregated breadcrumb path
+      const allCategories = Array.from(new Set(uniqueTargets.map(t => t.category))).join(', ');
+      const allComponents = Array.from(new Set(uniqueTargets.map(t => t.component))).join(', ');
+      
+      const firstResponsePath = responseList.find(item => Array.isArray(item.path) && item.path.length > 0)?.path;
+      if (firstResponsePath && firstResponsePath.length >= 3) {
+        setSharepointPath([firstResponsePath[0], firstResponsePath[1], allCategories, allComponents]);
+      } else {
+        setSharepointPath(['OneFactory', 'Drawings', allCategories, allComponents]);
+      }
+
+      // Check which components had no drawings found
+      const foundComponents = new Set(allDrawings.map(d => d.sourceComponent));
+      const missing = uniqueTargets.filter(t => !foundComponents.has(t.component)).map(t => t.component);
+      setMissingComponents(missing);
+
     } catch (error) {
       if (requestId === drawingRequestIdRef.current) {
         console.error('Fetch drawings failed:', error);
         setDrawings([]);
         setSharepointPath([]);
+        setMissingComponents([]);
       }
     } finally {
       if (requestId === drawingRequestIdRef.current) {
@@ -1077,37 +1098,68 @@ export default function App() {
                      <span className="text-sm font-medium">Fetching drawings via API...</span>
                    </div>
                 ) : drawings.length > 0 ? (
-                  <div className="space-y-3">
-                    <p className="text-xs font-semibold text-slate-500 mb-2 uppercase">Found {drawings.length} matching files</p>
-                    {drawings.map(drawing => (
-                      <div key={drawing.id} className="flex items-center justify-between p-3 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-400 hover:shadow-md transition-all group">
-                         <div className="flex items-center space-x-4">
-                            <div className={`w-12 h-12 rounded flex items-center justify-center text-white font-bold text-sm shadow-inner ${drawing.type === 'PDF' ? 'bg-red-500' : 'bg-indigo-500'}`}>
-                              {drawing.type}
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-700 transition-colors">{drawing.name}</p>
-                              <div className="flex space-x-3 text-xs text-slate-500 mt-1">
-                                <span>Component: {drawing.sourceComponent || '-'}</span>
-                                <span>Revision: {drawing.version}</span>
-                                <span>{drawing.date}</span>
-                              </div>
-                            </div>
-                         </div>
-                         <div className="flex space-x-2">
-                            <button className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Preview">
-                              <Eye size={18} />
-                            </button>
-                            <button className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Download">
-                              <Download size={18} />
-                            </button>
+                  <div className="space-y-4">
+                    <p className="text-xs font-semibold text-slate-500 uppercase">Found {drawings.length} matching files</p>
+                    
+                    {missingComponents.length > 0 && (
+                      <div className="bg-orange-50 border border-orange-200 text-orange-800 p-3 rounded-lg shadow-sm text-sm">
+                         <p className="font-semibold mb-1 flex items-center"><Search size={16} className="mr-1.5" /> No Drawings Found</p>
+                         <p className="mb-2 opacity-90">The following components have no drawings associated with them in SharePoint:</p>
+                         <div className="flex flex-wrap gap-2">
+                           {missingComponents.map((c, i) => (
+                             <span key={i} className="px-2 py-0.5 bg-orange-100/50 border border-orange-200 rounded text-xs font-medium">
+                               {c}
+                             </span>
+                           ))}
                          </div>
                       </div>
-                    ))}
+                    )}
+                    
+                    <div className="space-y-3">
+                      {drawings.map(drawing => (
+                        <div key={drawing.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-400 hover:shadow-md transition-all group gap-y-3 sm:gap-y-0">
+                           <div className="flex items-center space-x-4">
+                              <div className={`w-12 h-12 rounded flex shrink-0 items-center justify-center text-white font-bold text-sm shadow-inner ${drawing.type.toUpperCase() === 'PDF' ? 'bg-red-500' : 'bg-indigo-500'}`}>
+                                {drawing.type}
+                              </div>
+                              <div className="min-w-0 pr-4">
+                                <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-700 transition-colors break-words">{drawing.name}</p>
+                                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 mt-1">
+                                  <span className="font-medium bg-slate-100 rounded px-1.5 py-0.5">Component: {drawing.sourceComponent || '-'}</span>
+                                  <span className="mt-1">Revision: {drawing.version}</span>
+                                  <span className="mt-1">{drawing.date}</span>
+                                </div>
+                              </div>
+                           </div>
+                           <div className="flex space-x-2 shrink-0">
+                              <a href={drawing.url} target="_blank" rel="noopener noreferrer" className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Preview Online">
+                                <Eye size={18} />
+                              </a>
+                              <a href={drawing.download_url || drawing.url} target="_blank" rel="noopener noreferrer" className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Download">
+                                <Download size={18} />
+                              </a>
+                           </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ) : (
-                  <div className="text-center py-12 text-slate-500 bg-white border border-dashed border-slate-300 rounded-lg mt-4">
-                    No drawings found in SharePoint for this component.
+                  <div className="text-center py-10 px-4 text-slate-500 bg-white border border-dashed border-slate-300 rounded-lg mt-4">
+                    <p className="mb-2 font-medium text-slate-600">No drawings found in SharePoint.</p>
+                    
+                    {missingComponents.length > 0 && (
+                      <div className="mt-4 bg-orange-50 border border-orange-200 text-orange-800 p-3 rounded-lg shadow-sm text-sm text-left">
+                         <p className="font-semibold mb-1 flex items-center justify-center"><Search size={16} className="mr-1.5" /> Missing Drawings</p>
+                         <p className="mb-2 opacity-90 text-center">The following components have no drawings associated with them in SharePoint:</p>
+                         <div className="flex flex-wrap justify-center gap-2 mt-3">
+                           {missingComponents.map((c, i) => (
+                             <span key={i} className="px-2 py-0.5 bg-orange-100/60 border border-orange-200 rounded text-xs font-medium">
+                               {c}
+                             </span>
+                           ))}
+                         </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
