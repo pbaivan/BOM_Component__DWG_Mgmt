@@ -1,0 +1,1 @@
+"""BOM backend application package."""
