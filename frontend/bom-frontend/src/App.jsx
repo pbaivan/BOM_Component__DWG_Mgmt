@@ -244,12 +244,6 @@ const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
 
   useEffect(() => {
     uniqueValuesCacheRef.current = new Map();
-    setFilters({});
-    setOpenMenuColumn(null);
-    setScrollTop(0);
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = 0;
-    }
   }, [data, columns]);
 
   useEffect(() => {
@@ -467,10 +461,11 @@ export default function App() {
     }
   };
 
-  const downloadBOMFile = async (recordId, fileName) => {
+  const downloadBOMFile = async (recordId) => {
     try {
       // Direct window.open instead of fetch to let browser handle the binary download elegantly
-      window.open(`http://localhost:8000/api/save/file/${recordId}/download`, '_blank');
+      const base = API_BASE_CANDIDATES[0] || 'http://localhost:8000';
+      window.open(`${base}/api/save/file/${recordId}/download`, '_blank');
     } catch (err) {
       console.error('Download err:', err);
       alert('Could not download file.');
@@ -655,84 +650,6 @@ export default function App() {
     processFile(event.target.files[0]);
     event.target.value = ''; 
   };
-
-  const saveBOMFileOnly = useCallback(async () => {
-    if (!saveRecordId || !uploadedBOMFile) {
-      alert('Please upload a BOM file first.');
-      return;
-    }
-
-    setSavingAction('file');
-    const formData = new FormData();
-    formData.append('record_id', saveRecordId);
-    formData.append('file', uploadedBOMFile);
-
-    try {
-      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/save/file', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (ok && payload?.status === 'success') {
-        applySaveState(payload);
-      } else {
-        const reason = payload?.message || `HTTP ${status}`;
-        alert(`Save BOM File failed: ${reason} (API: ${baseUrl})`);
-      }
-    } catch (error) {
-      console.error('Save BOM file error:', error);
-      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
-    } finally {
-      setSavingAction('');
-    }
-  }, [saveRecordId, uploadedBOMFile, applySaveState]);
-
-  const saveMetadataOnly = useCallback(async () => {
-    if (!saveRecordId) {
-      alert('Save record is not initialized. Please re-upload BOM file.');
-      return;
-    }
-
-    const normalizedFileName = String(fileMeta.name || '').trim();
-    const normalizedUploadDate = String(fileMeta.date || '').trim();
-    const normalizedVersion = String(fileMeta.version || '').trim() || '1.0';
-
-    if (!normalizedFileName || !normalizedUploadDate) {
-      alert('File Name and Upload Date are required to save metadata.');
-      return;
-    }
-
-    setSavingAction('metadata');
-    try {
-      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/save/metadata', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          record_id: saveRecordId,
-          file_name: normalizedFileName,
-          upload_date: normalizedUploadDate,
-          version: normalizedVersion,
-        }),
-      });
-
-      if (ok && payload?.status === 'success') {
-        applySaveState(payload);
-        if (normalizedVersion !== fileMeta.version) {
-          setFileMeta(prev => ({ ...prev, version: normalizedVersion }));
-        }
-      } else {
-        const reason = payload?.message || `HTTP ${status}`;
-        alert(`Save Metadata failed: ${reason} (API: ${baseUrl})`);
-      }
-    } catch (error) {
-      console.error('Save metadata error:', error);
-      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
-    } finally {
-      setSavingAction('');
-    }
-  }, [saveRecordId, fileMeta, applySaveState]);
 
   const saveBoth = useCallback(async () => {
     if (!saveRecordId || !uploadedBOMFile) {
@@ -1076,7 +993,13 @@ export default function App() {
 
             <div className="flex-1 overflow-hidden relative">
               {masterData.length > 0 ? (
-                <ExcelTable data={masterData} columns={columns} onRowClick={onMasterRowClicked} selectedRow={selectedParent} />
+                <ExcelTable
+                  key={`master-${saveRecordId || 'draft'}-${columns.length}-${masterData.length}`}
+                  data={masterData}
+                  columns={columns}
+                  onRowClick={onMasterRowClicked}
+                  selectedRow={selectedParent}
+                />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400">
                   <FileText size={40} className="mb-3 text-slate-300" />
@@ -1101,7 +1024,13 @@ export default function App() {
             </div>
             <div className="flex-1 overflow-hidden relative">
               {selectedParent ? (
-                <ExcelTable data={detailData} columns={columns} onRowClick={onDetailRowClicked} selectedRow={selectedDetail} />
+                <ExcelTable
+                  key={`detail-${normalizeKey(getCaselessValue(selectedParent, 'PARENT'))}-${detailData.length}`}
+                  data={detailData}
+                  columns={columns}
+                  onRowClick={onDetailRowClicked}
+                  selectedRow={selectedDetail}
+                />
               ) : (
                 <div className="h-full flex items-center justify-center text-slate-400 italic">
                   Select a row from the Master Table above.
@@ -1300,7 +1229,7 @@ export default function App() {
                              </button>
                              {r.file_saved && (
                                <button
-                                  onClick={() => downloadBOMFile(r.record_id, r.original_file_name)}
+                                   onClick={() => downloadBOMFile(r.record_id)}
                                   className="px-3 py-1.5 text-xs font-semibold bg-slate-50 text-slate-700 border border-slate-300 rounded hover:bg-slate-100 transition shadow-sm"
                                >
                                  ⬇ Raw Excel .xlsx
