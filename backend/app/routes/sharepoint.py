@@ -8,8 +8,16 @@ router = APIRouter()
 
 
 @router.get("/search")
-async def search_drawings(category: str, component: str):
-    return await sharepoint_service.search_drawings(category, component)
+async def search_drawings(
+    category: str,
+    component: str,
+    include_debug: bool = Query(default=False),
+):
+    return await sharepoint_service.search_drawings(
+        category,
+        component,
+        include_debug=include_debug,
+    )
 
 
 @router.get("/sp_file")
