@@ -10,6 +10,7 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
   const [drawings, setDrawings] = useState([]);
   const [missingComponents, setMissingComponents] = useState([]);
   const [loadingDrawings, setLoadingDrawings] = useState(false);
+  const [batchDownloading, setBatchDownloading] = useState(false);
   const [directoryScopes, setDirectoryScopes] = useState([]);
   const [componentTargets, setComponentTargets] = useState([]);
   const drawingRequestIdRef = useRef(0);
@@ -192,6 +193,52 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
     setSelectedDetail(row);
   }, []);
 
+  const triggerBrowserDownload = useCallback((blob, filename) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(objectUrl);
+  }, []);
+
+  const fetchDrawingBlob = useCallback(async (drawing) => {
+    if (!drawing?.drive_id || !drawing?.item_id) {
+      const error = new Error('Missing drawing identifiers.');
+      error.code = 'INVALID_DRAWING';
+      throw error;
+    }
+
+    const base = getPrimaryApiBaseUrl();
+    const downloadUrl = `${base}/api/sp_file?drive_id=${encodeURIComponent(drawing.drive_id)}&item_id=${encodeURIComponent(drawing.item_id)}&filename=${encodeURIComponent(drawing.name || 'drawing')}&mode=download`;
+    const response = await fetch(downloadUrl);
+
+    if (!response.ok) {
+      const bodyText = await response.text();
+      let payload = {};
+      try {
+        payload = bodyText ? JSON.parse(bodyText) : {};
+      } catch {
+        payload = bodyText ? { message: bodyText } : {};
+      }
+
+      const error = new Error(`Download failed (HTTP ${response.status})`);
+      error.meta = {
+        status: response.status,
+        payload,
+        baseUrl: base,
+      };
+      throw error;
+    }
+
+    return {
+      blob: await response.blob(),
+      filename: drawing.name || 'drawing',
+    };
+  }, [getPrimaryApiBaseUrl]);
+
   const previewDrawingFile = useCallback((drawing) => {
     if (!drawing?.drive_id || !drawing?.item_id) {
       return;
@@ -208,45 +255,75 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
     }
 
     try {
-      const base = getPrimaryApiBaseUrl();
-      const downloadUrl = `${base}/api/sp_file?drive_id=${encodeURIComponent(drawing.drive_id)}&item_id=${encodeURIComponent(drawing.item_id)}&filename=${encodeURIComponent(drawing.name || 'drawing')}&mode=download`;
-      const response = await fetch(downloadUrl);
-
-      if (!response.ok) {
-        const bodyText = await response.text();
-        let payload = {};
-        try {
-          payload = bodyText ? JSON.parse(bodyText) : {};
-        } catch {
-          payload = bodyText ? { message: bodyText } : {};
-        }
-
+      const { blob, filename } = await fetchDrawingBlob(drawing);
+      triggerBrowserDownload(blob, filename);
+    } catch (error) {
+      console.error('Download drawing failed:', error);
+      if (error?.meta) {
         onApiError?.(classifyApiFailure({
           operation: 'Download SharePoint file',
-          status: response.status,
-          payload,
-          baseUrl: base,
+          status: error.meta.status,
+          payload: error.meta.payload,
+          baseUrl: error.meta.baseUrl,
         }));
         return;
       }
-
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = drawing.name || 'drawing';
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      URL.revokeObjectURL(objectUrl);
-    } catch (error) {
-      console.error('Download drawing failed:', error);
       onApiError?.(classifyApiFailure({
         operation: 'Download SharePoint file',
         error,
       }));
     }
-  }, [getPrimaryApiBaseUrl, onApiError]);
+  }, [fetchDrawingBlob, onApiError, triggerBrowserDownload]);
+
+  const downloadDrawingFilesBatch = useCallback(async (drawingList) => {
+    const targets = Array.isArray(drawingList) ? drawingList.filter(Boolean) : [];
+    if (targets.length === 0 || batchDownloading) {
+      return;
+    }
+
+    setBatchDownloading(true);
+    let failureCount = 0;
+    let firstFailureMeta = null;
+
+    try {
+      for (const drawing of targets) {
+        try {
+          const { blob, filename } = await fetchDrawingBlob(drawing);
+          triggerBrowserDownload(blob, filename);
+        } catch (error) {
+          failureCount += 1;
+          if (!firstFailureMeta) {
+            firstFailureMeta = error?.meta
+              ? {
+                status: error.meta.status,
+                payload: error.meta.payload,
+                baseUrl: error.meta.baseUrl,
+              }
+              : { error };
+          }
+        }
+      }
+
+      if (failureCount > 0) {
+        const operation = `Batch download drawings (${failureCount}/${targets.length} failed)`;
+        if (firstFailureMeta?.status) {
+          onApiError?.(classifyApiFailure({
+            operation,
+            status: firstFailureMeta.status,
+            payload: firstFailureMeta.payload,
+            baseUrl: firstFailureMeta.baseUrl,
+          }));
+        } else {
+          onApiError?.(classifyApiFailure({
+            operation,
+            error: firstFailureMeta?.error || new Error('Batch download failed.'),
+          }));
+        }
+      }
+    } finally {
+      setBatchDownloading(false);
+    }
+  }, [batchDownloading, fetchDrawingBlob, onApiError, triggerBrowserDownload]);
 
   return {
     detailData,
@@ -255,12 +332,14 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
     drawings,
     missingComponents,
     loadingDrawings,
+    batchDownloading,
     directoryScopes,
     componentTargets,
     onMasterRowClicked,
     onDetailRowClicked,
     previewDrawingFile,
     downloadDrawingFile,
+    downloadDrawingFilesBatch,
     resetDrawingView,
   };
 };

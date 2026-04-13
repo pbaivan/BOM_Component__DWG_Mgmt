@@ -99,7 +99,7 @@
 2. 操作步骤:
 3. 统一后端结构化日志，增加 request_id 与关键耗时指标。
 4. 增加前端错误边界与接口错误分类提示。
-5. 增加后端关键单元测试与最小契约测试。
+5. 增加后端关键单元测试与最小契约测试，并纳入 pr-quick-check 自动门禁。
 6. 增加性能基准: SharePoint 多目录查询基线和对比报表。
 7. 验收标准:
 8. 异常可定位。
@@ -113,8 +113,9 @@
 16. 执行记录(2026-04-13, Stage 5B):
 17. 已新增后端测试集: BOM 工具函数单元测试、可观测性格式单元测试、request_id 契约测试、性能基线对比规则单元测试。
 18. 已增强性能基准脚本 `backend/scripts/sharepoint_search_benchmark.py`，支持 `--output`、`--baseline`、`--write-baseline`、阈值化回归判定与对比报告输出。
-19. 验证通过: 后端 `python -m unittest discover -s tests -p "test_*.py"` 通过(12 tests)。
-20. Stage 5 已满足验收标准: 异常可定位、性能可量化、质量门槛可执行。
+19. 已将 backend unittest 接入 `.github/workflows/pr-quick-check.yml`，PR 阶段自动执行。
+20. 验证通过: 后端 `python -m unittest discover -s tests -p "test_*.py"` 通过(12 tests)。
+21. Stage 5 已满足验收标准: 异常可定位、性能可量化、质量门槛可执行。
 
 ## 建议执行顺序
 1. 先完成 Stage 3A 门禁收口。

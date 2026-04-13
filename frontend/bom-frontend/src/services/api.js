@@ -1,7 +1,21 @@
 const normalizeBaseUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
 
+const getRuntimeApiBase = () => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  const hostname = String(window.location.hostname || '').toLowerCase();
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return '';
+  }
+
+  return normalizeBaseUrl(window.location.origin);
+};
+
 export const API_BASE_CANDIDATES = Array.from(new Set([
   normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL),
+  getRuntimeApiBase(),
   'http://127.0.0.1:8000',
   'http://localhost:8000',
 ].filter(Boolean)));

@@ -225,10 +225,12 @@ export default function App() {
           directoryScopes={drawingSearch.directoryScopes}
           componentTargets={drawingSearch.componentTargets}
           loadingDrawings={drawingSearch.loadingDrawings}
+          batchDownloading={drawingSearch.batchDownloading}
           drawings={drawingSearch.drawings}
           missingComponents={drawingSearch.missingComponents}
           onPreview={drawingSearch.previewDrawingFile}
           onDownload={drawingSearch.downloadDrawingFile}
+          onBatchDownload={drawingSearch.downloadDrawingFilesBatch}
         />
 
       </div>
