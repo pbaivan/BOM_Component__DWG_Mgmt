@@ -117,3 +117,11 @@ Backend tests now include:
 
 Run tests:
 - `python -m unittest discover -s tests -p "test_*.py"`
+
+## Real-site test readiness
+
+When moving from local `http://localhost:5173` to a real website for colleague testing:
+- Set frontend `VITE_API_BASE_URL` to the public backend URL (optional if frontend/backend are same origin).
+- Configure backend `BOM_ALLOWED_ORIGINS` to include the real frontend origin(s), for example `https://bom-uat.yourcompany.com`.
+- Keep local origins if needed for dev, e.g. `http://127.0.0.1:5173,http://localhost:5173`.
+- Verify reachability with `GET /api/health` from the deployed frontend network.
