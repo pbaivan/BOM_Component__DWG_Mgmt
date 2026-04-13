@@ -1,13 +1,13 @@
 # BOM Component DWG Mgmt - Project Stage Roadmap
 
 ## 文档信息
-1. 更新时间: 2026-04-13 (Stage 4 completion update)
+1. 更新时间: 2026-04-13 (Stage 5 completion update)
 2. 适用范围: BOM_Component__DWG_Mgmt 前后端协同改造
 3. 推进原则: 先稳后快、单线推进、每阶段可回归
 
 ## 当前阶段结论
-1. 当前处于 Stage 1-4 已完成状态: 后端基础架构重构、PR 快速门禁、SharePoint 服务深拆并行优化、前端服务/hooks/组件拆分均已完成。
-2. 当前最强项在前后端结构清晰度与回归可执行性，下一阶段重点转向 Stage 5 的可观测性与质量门槛建设。
+1. 当前处于 Stage 1-5 全部完成状态: 后端基础架构重构、PR 快速门禁、SharePoint 服务深拆并行优化、前端服务/hooks/组件拆分、可观测性强化、质量门禁补齐均已完成。
+2. 当前最强项在前后端结构清晰度、可定位性与回归可执行性，后续重点转入按版本节奏做增量优化。
 
 ## 现状核对证据
 1. 后端模块化已完成: backend/app/main.py, backend/app/db.py, backend/app/config.py, backend/app/routes/*, backend/app/services/*。
@@ -27,7 +27,7 @@
 3. Stage 3A - 门禁收口: 已执行(首版完成)。
 4. Stage 3B - 后端复杂域治理(SharePoint): 已完成。
 5. Stage 4 - 前端架构拆分: 已完成。
-6. Stage 5 - 稳定性与可观测性强化: 未开始。
+6. Stage 5 - 稳定性与可观测性强化: 已完成。
 
 ## 后续阶段推进步骤
 
@@ -105,12 +105,22 @@
 8. 异常可定位。
 9. 性能优化可量化。
 10. 版本发布有明确质量门槛。
+11. 执行记录(2026-04-13, Stage 5A):
+12. 后端已新增 request_id 中间件与结构化请求日志，响应头返回 X-Request-ID，错误响应体附带 request_id。
+13. 前端已新增 AppErrorBoundary，运行时渲染异常可兜底并提示刷新恢复。
+14. 前端已新增 API 错误分类提示条，按 network/auth/validation/server 等类别反馈失败原因与 request_id。
+15. 验证通过: 前端 npm run lint + npm run build 通过；后端 compileall 通过；request_id 头与错误体实测可用。
+16. 执行记录(2026-04-13, Stage 5B):
+17. 已新增后端测试集: BOM 工具函数单元测试、可观测性格式单元测试、request_id 契约测试、性能基线对比规则单元测试。
+18. 已增强性能基准脚本 `backend/scripts/sharepoint_search_benchmark.py`，支持 `--output`、`--baseline`、`--write-baseline`、阈值化回归判定与对比报告输出。
+19. 验证通过: 后端 `python -m unittest discover -s tests -p "test_*.py"` 通过(12 tests)。
+20. Stage 5 已满足验收标准: 异常可定位、性能可量化、质量门槛可执行。
 
 ## 建议执行顺序
 1. 先完成 Stage 3A 门禁收口。
 2. 再完成 Stage 3B SharePoint 深拆和并行化。
 3. 再推进 Stage 4 前端拆分，避免双线重构导致回归定位困难。(已完成)
-4. 最后执行 Stage 5 的可观测性与质量强化。(下一阶段)
+4. 最后执行 Stage 5 的可观测性与质量强化。(已完成)
 
 ## 每阶段回归命令
 ```powershell

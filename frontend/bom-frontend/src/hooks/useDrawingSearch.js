@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
+import { classifyApiFailure } from '../utils/apiError';
 import { getCaselessValue, normalizeKey } from '../utils/bomTable';
 
-export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryApiBaseUrl }) => {
+export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryApiBaseUrl, onApiError }) => {
   const [detailData, setDetailData] = useState([]);
   const [selectedParent, setSelectedParent] = useState(null);
   const [selectedDetail, setSelectedDetail] = useState(null);
@@ -89,11 +90,21 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
     }
 
     try {
+      let failedTargets = 0;
+      let failureSnapshot = null;
       const responseList = await Promise.all(uniqueTargets.map(async ({ category, component }) => {
-        const { ok, payload } = await fetchApiWithFallback(`/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
+        const { ok, payload, status, baseUrl } = await fetchApiWithFallback(`/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
         const data = payload || {};
 
         if (!ok || data.status !== 'success') {
+          failedTargets += 1;
+          if (!failureSnapshot) {
+            failureSnapshot = {
+              status,
+              payload,
+              baseUrl,
+            };
+          }
           return { drawings: [], scopes: [] };
         }
 
@@ -149,6 +160,15 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
       const foundComponents = new Set(allDrawings.map(d => d.sourceComponent));
       const missing = uniqueTargets.filter(t => !foundComponents.has(t.component)).map(t => t.component);
       setMissingComponents(missing);
+
+      if (failedTargets > 0 && failedTargets === uniqueTargets.length) {
+        onApiError?.(classifyApiFailure({
+          operation: 'Search drawings',
+          status: failureSnapshot?.status,
+          payload: failureSnapshot?.payload,
+          baseUrl: failureSnapshot?.baseUrl,
+        }));
+      }
     } catch (error) {
       if (requestId === drawingRequestIdRef.current) {
         console.error('Fetch drawings failed:', error);
@@ -156,13 +176,17 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
         setDirectoryScopes([]);
         setComponentTargets([]);
         setMissingComponents([]);
+        onApiError?.(classifyApiFailure({
+          operation: 'Search drawings',
+          error,
+        }));
       }
     } finally {
       if (requestId === drawingRequestIdRef.current) {
         setLoadingDrawings(false);
       }
     }
-  }, [fetchApiWithFallback, rowsByParent]);
+  }, [fetchApiWithFallback, onApiError, rowsByParent]);
 
   const onDetailRowClicked = useCallback((row) => {
     setSelectedDetail(row);
@@ -189,7 +213,21 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
       const response = await fetch(downloadUrl);
 
       if (!response.ok) {
-        throw new Error(`Download failed (HTTP ${response.status})`);
+        const bodyText = await response.text();
+        let payload = {};
+        try {
+          payload = bodyText ? JSON.parse(bodyText) : {};
+        } catch {
+          payload = bodyText ? { message: bodyText } : {};
+        }
+
+        onApiError?.(classifyApiFailure({
+          operation: 'Download SharePoint file',
+          status: response.status,
+          payload,
+          baseUrl: base,
+        }));
+        return;
       }
 
       const blob = await response.blob();
@@ -203,9 +241,12 @@ export const useDrawingSearch = ({ masterData, fetchApiWithFallback, getPrimaryA
       URL.revokeObjectURL(objectUrl);
     } catch (error) {
       console.error('Download drawing failed:', error);
-      alert('Failed to download this file. Please try again.');
+      onApiError?.(classifyApiFailure({
+        operation: 'Download SharePoint file',
+        error,
+      }));
     }
-  }, [getPrimaryApiBaseUrl]);
+  }, [getPrimaryApiBaseUrl, onApiError]);
 
   return {
     detailData,

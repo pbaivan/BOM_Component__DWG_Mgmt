@@ -5,6 +5,7 @@ import { DrawingPanel } from './components/DrawingPanel';
 import { ExcelTable } from './components/ExcelTable';
 import { HistoryModal } from './components/HistoryModal';
 import { TopBar } from './components/TopBar';
+import { ApiNoticeBar } from './components/ApiNoticeBar';
 import { useBomUploadSave } from './hooks/useBomUploadSave';
 import { useDragAndDropUpload } from './hooks/useDragAndDropUpload';
 import { useDrawingSearch } from './hooks/useDrawingSearch';
@@ -17,6 +18,17 @@ const MAX_UPLOAD_BYTES = Number(import.meta.env.VITE_MAX_UPLOAD_BYTES || (100 * 
 export default function App() {
   const [columns, setColumns] = useState([]);
   const [masterData, setMasterData] = useState([]);
+  const [apiNotice, setApiNotice] = useState(null);
+
+  const handleApiError = useCallback((notice) => {
+    if (!notice) {
+      return;
+    }
+    setApiNotice({
+      ...notice,
+      emittedAt: Date.now(),
+    });
+  }, []);
 
   const {
     showHistory,
@@ -25,12 +37,16 @@ export default function App() {
     loadingHistory,
     loadHistory,
     deleteHistoryRecord,
-  } = useHistoryRecords({ fetchApiWithFallback });
+  } = useHistoryRecords({
+    fetchApiWithFallback,
+    onApiError: handleApiError,
+  });
 
   const drawingSearch = useDrawingSearch({
     masterData,
     fetchApiWithFallback,
     getPrimaryApiBaseUrl,
+    onApiError: handleApiError,
   });
 
   const onHydrateTable = useCallback(({ rows, columns: nextColumns }) => {
@@ -38,9 +54,9 @@ export default function App() {
     setColumns(nextColumns || []);
   }, []);
 
-  const onResetDependentView = useCallback(() => {
+  const onResetDependentView = () => {
     drawingSearch.resetDrawingView();
-  }, [drawingSearch.resetDrawingView]);
+  };
 
   const {
     fileMeta,
@@ -59,10 +75,10 @@ export default function App() {
   } = useBomUploadSave({
     fetchApiWithFallback,
     getPrimaryApiBaseUrl,
-    apiBaseCandidates: API_BASE_CANDIDATES,
     maxUploadBytes: MAX_UPLOAD_BYTES,
     onHydrateTable,
     onResetDependentView,
+    onApiError: handleApiError,
   });
 
   const {
@@ -87,6 +103,11 @@ export default function App() {
         loadingHistory={loadingHistory}
         onLoadHistory={loadHistory}
         onFileUpload={handleFileUpload}
+      />
+
+      <ApiNoticeBar
+        notice={apiNotice}
+        onDismiss={() => setApiNotice(null)}
       />
 
       {/* Main Layout */}

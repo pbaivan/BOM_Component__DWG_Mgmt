@@ -1,12 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
 
+import { classifyApiFailure } from '../utils/apiError';
+
 export const useBomUploadSave = ({
   fetchApiWithFallback,
   getPrimaryApiBaseUrl,
-  apiBaseCandidates,
   maxUploadBytes,
   onHydrateTable,
   onResetDependentView,
+  onApiError,
 }) => {
   const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
   const [uploadedBOMFile, setUploadedBOMFile] = useState(null);
@@ -48,8 +50,14 @@ export const useBomUploadSave = ({
   const loadBOMTable = useCallback(async (recordId, fileName, version) => {
     try {
       setUploading(true);
-      const { ok, payload } = await fetchApiWithFallback(`/api/save/table/${recordId}`);
+      const { ok, payload, status, baseUrl } = await fetchApiWithFallback(`/api/save/table/${recordId}`);
       if (!ok || !payload) {
+        onApiError?.(classifyApiFailure({
+          operation: 'Load BOM table',
+          status,
+          payload,
+          baseUrl,
+        }));
         return false;
       }
 
@@ -68,13 +76,16 @@ export const useBomUploadSave = ({
       onResetDependentView();
       return true;
     } catch (err) {
-      alert('Failed to load past BOM table.');
       console.error(err);
+      onApiError?.(classifyApiFailure({
+        operation: 'Load BOM table',
+        error: err,
+      }));
       return false;
     } finally {
       setUploading(false);
     }
-  }, [applySaveState, fetchApiWithFallback, onHydrateTable, onResetDependentView]);
+  }, [applySaveState, fetchApiWithFallback, onApiError, onHydrateTable, onResetDependentView]);
 
   const processFile = useCallback(async (file) => {
     if (!file) return;
@@ -129,15 +140,26 @@ export const useBomUploadSave = ({
         }
       } else {
         const reason = result.message || `HTTP ${status}`;
-        alert(`Upload failed: ${reason} (API: ${baseUrl})`);
+        onApiError?.(classifyApiFailure({
+          operation: 'Upload BOM file',
+          status,
+          payload: {
+            ...result,
+            message: reason,
+          },
+          baseUrl,
+        }));
       }
     } catch (error) {
       console.error('Upload error:', error);
-      alert(`Cannot connect to backend server. Tried: ${apiBaseCandidates.join(', ')}`);
+      onApiError?.(classifyApiFailure({
+        operation: 'Upload BOM file',
+        error,
+      }));
     } finally {
       setUploading(false);
     }
-  }, [apiBaseCandidates, applySaveState, fetchApiWithFallback, maxUploadBytes, onHydrateTable, onResetDependentView, resetSaveState]);
+  }, [applySaveState, fetchApiWithFallback, maxUploadBytes, onApiError, onHydrateTable, onResetDependentView, resetSaveState]);
 
   const handleFileUpload = useCallback((event) => {
     processFile(event.target.files[0]);
@@ -180,15 +202,26 @@ export const useBomUploadSave = ({
         }
       } else {
         const reason = payload?.message || `HTTP ${status}`;
-        alert(`Save Both failed: ${reason} (API: ${baseUrl})`);
+        onApiError?.(classifyApiFailure({
+          operation: 'Save BOM + metadata',
+          status,
+          payload: {
+            ...(payload || {}),
+            message: reason,
+          },
+          baseUrl,
+        }));
       }
     } catch (error) {
       console.error('Save both error:', error);
-      alert(`Cannot connect to backend server. Tried: ${apiBaseCandidates.join(', ')}`);
+      onApiError?.(classifyApiFailure({
+        operation: 'Save BOM + metadata',
+        error,
+      }));
     } finally {
       setSavingAction('');
     }
-  }, [apiBaseCandidates, applySaveState, fetchApiWithFallback, fileMeta, saveRecordId, uploadedBOMFile]);
+  }, [applySaveState, fetchApiWithFallback, fileMeta, onApiError, saveRecordId, uploadedBOMFile]);
 
   const downloadBOMFile = useCallback((recordId) => {
     try {
@@ -196,9 +229,12 @@ export const useBomUploadSave = ({
       window.open(`${base}/api/save/file/${recordId}/download`, '_blank');
     } catch (err) {
       console.error('Download err:', err);
-      alert('Could not download file.');
+      onApiError?.(classifyApiFailure({
+        operation: 'Download BOM file',
+        error: err,
+      }));
     }
-  }, [getPrimaryApiBaseUrl]);
+  }, [getPrimaryApiBaseUrl, onApiError]);
 
   const saveStatusLabel = useMemo(() => {
     if (saveState.file_saved && saveState.metadata_saved) {

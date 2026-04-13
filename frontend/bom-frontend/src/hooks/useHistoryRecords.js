@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
 
-export const useHistoryRecords = ({ fetchApiWithFallback }) => {
+import { classifyApiFailure } from '../utils/apiError';
+
+export const useHistoryRecords = ({ fetchApiWithFallback, onApiError }) => {
   const [showHistory, setShowHistory] = useState(false);
   const [historyRecords, setHistoryRecords] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -9,16 +11,27 @@ export const useHistoryRecords = ({ fetchApiWithFallback }) => {
     setLoadingHistory(true);
     setShowHistory(true);
     try {
-      const { ok, payload } = await fetchApiWithFallback('/api/save/list?limit=50');
+      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/save/list?limit=50');
       if (ok && payload && payload.status === 'success') {
         setHistoryRecords(payload.records || []);
+      } else {
+        onApiError?.(classifyApiFailure({
+          operation: 'Load history records',
+          status,
+          payload,
+          baseUrl,
+        }));
       }
     } catch (err) {
       console.error('List history err:', err);
+      onApiError?.(classifyApiFailure({
+        operation: 'Load history records',
+        error: err,
+      }));
     } finally {
       setLoadingHistory(false);
     }
-  }, [fetchApiWithFallback]);
+  }, [fetchApiWithFallback, onApiError]);
 
   const deleteHistoryRecord = useCallback(async (recordId) => {
     if (!window.confirm('Are you sure you want to permanently delete this BOM record?')) {
@@ -27,21 +40,29 @@ export const useHistoryRecords = ({ fetchApiWithFallback }) => {
 
     try {
       setLoadingHistory(true);
-      const { ok, payload } = await fetchApiWithFallback(`/api/save/record/${recordId}`, {
+      const { ok, payload, status, baseUrl } = await fetchApiWithFallback(`/api/save/record/${recordId}`, {
         method: 'DELETE',
       });
       if (ok && payload && payload.status === 'success') {
         setHistoryRecords(prev => prev.filter(r => r.record_id !== recordId));
       } else {
-        alert('Failed to delete the record.');
+        onApiError?.(classifyApiFailure({
+          operation: 'Delete history record',
+          status,
+          payload,
+          baseUrl,
+        }));
       }
     } catch (err) {
       console.error('Delete history err:', err);
-      alert('Could not connect to the server to delete the record.');
+      onApiError?.(classifyApiFailure({
+        operation: 'Delete history record',
+        error: err,
+      }));
     } finally {
       setLoadingHistory(false);
     }
-  }, [fetchApiWithFallback]);
+  }, [fetchApiWithFallback, onApiError]);
 
   return {
     showHistory,
