@@ -1,13 +1,13 @@
 # BOM Component DWG Mgmt - Project Stage Roadmap
 
 ## 文档信息
-1. 更新时间: 2026-04-13 (Stage 3B completion update)
+1. 更新时间: 2026-04-13 (Stage 4 completion update)
 2. 适用范围: BOM_Component__DWG_Mgmt 前后端协同改造
 3. 推进原则: 先稳后快、单线推进、每阶段可回归
 
 ## 当前阶段结论
-1. 当前处于 Stage 3A/3B 已完成状态: 后端基础架构重构、PR 快速门禁、SharePoint 服务深拆与并行优化已完成，前端组件化尚未启动。
-2. 当前最强项在后端可维护性与回归可执行性，当前最大风险在前端单文件耦合度与后续改造回归成本。
+1. 当前处于 Stage 1-4 已完成状态: 后端基础架构重构、PR 快速门禁、SharePoint 服务深拆并行优化、前端服务/hooks/组件拆分均已完成。
+2. 当前最强项在前后端结构清晰度与回归可执行性，下一阶段重点转向 Stage 5 的可观测性与质量门槛建设。
 
 ## 现状核对证据
 1. 后端模块化已完成: backend/app/main.py, backend/app/db.py, backend/app/config.py, backend/app/routes/*, backend/app/services/*。
@@ -19,14 +19,14 @@
 7. CI 快速门禁已落地: .github/workflows/pr-quick-check.yml (pull_request + workflow_dispatch)。
 8. SharePoint 服务已拆为 auth/search/file/utils 子模块，兼容门面仍为 backend/app/services/sharepoint_service.py。
 9. SharePoint 多 target URL 已改为 asyncio.gather + Semaphore 受控并行。
-10. 前端仍为单体文件: frontend/bom-frontend/src/App.jsx 约 1200 行，包含组件、状态、业务逻辑、API 封装。
+10. 前端已完成分层: services/hooks/components 已落地，App.jsx 已收敛为页面编排层。
 
 ## 阶段定义与状态
 1. Stage 1 - 基线与依赖完善: 已完成。
 2. Stage 2 - 后端架构重构: 已完成。
 3. Stage 3A - 门禁收口: 已执行(首版完成)。
 4. Stage 3B - 后端复杂域治理(SharePoint): 已完成。
-5. Stage 4 - 前端架构拆分: 未开始。
+5. Stage 4 - 前端架构拆分: 已完成。
 6. Stage 5 - 稳定性与可观测性强化: 未开始。
 
 ## 后续阶段推进步骤
@@ -76,6 +76,23 @@
 9. App.jsx 缩减到页面编排级别。
 10. 关键业务流(上传、保存、历史加载、SharePoint 搜索、预览下载)行为不变。
 11. 前后端联调保持通过。
+12. 执行记录(2026-04-13, Stage 4A):
+13. 已新增 src/services/api.js，集中管理 API_BASE_CANDIDATES、fallback 请求与响应解析。
+14. App.jsx 已改为复用服务层 API，不再内嵌 fetchApiWithFallback/parseResponseBody 实现。
+15. 本地验证通过: npm run lint 与 npm run build 均通过。
+16. 执行记录(2026-04-13, Stage 4B):
+17. 已新增 src/hooks/useHistoryRecords.js，抽离历史记录加载/删除与弹窗状态管理。
+18. 已新增 src/hooks/useDragAndDropUpload.js，抽离拖拽上传交互与窗口级文件拖放拦截。
+19. App.jsx 已接入上述 hooks，历史记录与拖拽逻辑不再内嵌在页面主文件。
+20. 本地验证通过: npm run lint 与 npm run build 均通过。
+21. 执行记录(2026-04-13, Stage 4C):
+22. 已新增 src/hooks/useDrawingSearch.js，抽离图纸搜索、目录聚合、缺失项统计、预览下载行为。
+23. App.jsx 已移除 onMasterRowClicked/onDetailRowClicked 复杂搜索逻辑，改由 hook 承载。
+24. 执行记录(2026-04-13, Stage 4D):
+25. 已新增 src/hooks/useBomUploadSave.js，抽离上传/保存/历史加载/保存状态机。
+26. 已新增组件: src/components/ColumnFilter.jsx, src/components/ExcelTable.jsx, src/components/DrawingPanel.jsx, src/components/HistoryModal.jsx, src/components/TopBar.jsx。
+27. App.jsx 已收敛为页面编排，核心职责为状态拼装和组件组合。
+28. 验证通过: npm run lint, npm run build, backend/scripts/api_regression_smoke.py (health/save/upload/search/sp_file 全通过)。
 
 ## Stage 5 (稳定性与运营化)
 1. 目标: 为上线或长期维护准备可观测性与质量保障。
@@ -92,8 +109,8 @@
 ## 建议执行顺序
 1. 先完成 Stage 3A 门禁收口。
 2. 再完成 Stage 3B SharePoint 深拆和并行化。
-3. 再推进 Stage 4 前端拆分，避免双线重构导致回归定位困难。
-4. 最后执行 Stage 5 的可观测性与质量强化。
+3. 再推进 Stage 4 前端拆分，避免双线重构导致回归定位困难。(已完成)
+4. 最后执行 Stage 5 的可观测性与质量强化。(下一阶段)
 
 ## 每阶段回归命令
 ```powershell

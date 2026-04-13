@@ -1,934 +1,93 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef, useDeferredValue } from 'react';
-import { Upload, FileText, Download, Eye, Loader2, Database, Filter, Search, ChevronRight, HardDrive, FolderOpen, History } from 'lucide-react';
+import React, { useCallback, useState } from 'react';
+import { Database, FileText, Upload } from 'lucide-react';
 
-const normalizeBaseUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
-const API_BASE_CANDIDATES = Array.from(new Set([
-  normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL),
-  'http://127.0.0.1:8000',
-  'http://localhost:8000',
-].filter(Boolean)));
+import { DrawingPanel } from './components/DrawingPanel';
+import { ExcelTable } from './components/ExcelTable';
+import { HistoryModal } from './components/HistoryModal';
+import { TopBar } from './components/TopBar';
+import { useBomUploadSave } from './hooks/useBomUploadSave';
+import { useDragAndDropUpload } from './hooks/useDragAndDropUpload';
+import { useDrawingSearch } from './hooks/useDrawingSearch';
+import { useHistoryRecords } from './hooks/useHistoryRecords';
+import { API_BASE_CANDIDATES, fetchApiWithFallback, getPrimaryApiBaseUrl } from './services/api';
+import { getCaselessValue, normalizeKey } from './utils/bomTable';
+
 const MAX_UPLOAD_BYTES = Number(import.meta.env.VITE_MAX_UPLOAD_BYTES || (100 * 1024 * 1024));
-const TABLE_ROW_HEIGHT = 36;
-const TABLE_OVERSCAN_ROWS = 12;
-
-const parseResponseBody = async (response) => {
-  const text = await response.text();
-  if (!text) return {};
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { message: text };
-  }
-};
-
-const fetchApiWithFallback = async (path, options = {}) => {
-  let lastNetworkError = null;
-
-  for (const baseUrl of API_BASE_CANDIDATES) {
-    try {
-      const response = await fetch(`${baseUrl}${path}`, options);
-      const payload = await parseResponseBody(response);
-
-      return {
-        ok: response.ok,
-        status: response.status,
-        payload,
-        baseUrl,
-      };
-    } catch (error) {
-      lastNetworkError = error;
-    }
-  }
-
-  const error = new Error('Unable to reach backend API.');
-  error.cause = lastNetworkError;
-  throw error;
-};
-
-const normalizeKey = (value) => String(value ?? '').trim();
-
-const getCaselessValue = (obj, targetKey) => {
-  if (!obj || typeof obj !== 'object') return undefined;
-  const upperTarget = targetKey.toUpperCase();
-  for (const k in obj) {
-    if (k.toUpperCase() === upperTarget) {
-      return obj[k];
-    }
-  }
-  return undefined;
-};
-
-const useDebouncedValue = (value, delay = 180) => {
-  const [debouncedValue, setDebouncedValue] = useState(value);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedValue(value), delay);
-    return () => clearTimeout(timer);
-  }, [value, delay]);
-
-  return debouncedValue;
-};
-
-// Excel-like Filter Menu Component with Fixed Overlay approach to prevent closing
-const ColumnFilter = ({ column, getUniqueValues, filters, setFilters, isOpen, toggleMenu, closeMenu }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const triggerRef = useRef(null);
-  const menuRef = useRef(null);
-  const debouncedSearchTerm = useDebouncedValue(searchTerm, 180);
-
-  const uniqueValues = useMemo(() => {
-    if (!isOpen) return [];
-    return getUniqueValues(column);
-  }, [isOpen, getUniqueValues, column]);
-
-  const displayValues = useMemo(() => {
-    if (!debouncedSearchTerm) return uniqueValues;
-    const normalized = debouncedSearchTerm.toLowerCase();
-    return uniqueValues.filter(v => v.toLowerCase().includes(normalized));
-  }, [uniqueValues, debouncedSearchTerm]);
-
-  const isFiltered = Object.prototype.hasOwnProperty.call(filters, column);
-  const selectedValues = filters[column] || new Set(uniqueValues);
-  const isAllSelected = !isFiltered || selectedValues.size === uniqueValues.length;
-
-  const updateFilterForColumn = (nextSet) => {
-    setFilters(prev => {
-      const next = { ...prev };
-      if (nextSet.size === uniqueValues.length) {
-        delete next[column];
-      } else {
-        next[column] = nextSet;
-      }
-      return next;
-    });
-  };
-
-  const handleCheckboxChange = (val) => {
-    const baseSelection = filters[column] ? new Set(filters[column]) : new Set(uniqueValues);
-    const newSelected = new Set(baseSelection);
-    if (newSelected.has(val)) {
-      newSelected.delete(val);
-    } else {
-      newSelected.add(val);
-    }
-    updateFilterForColumn(newSelected);
-  };
-
-  const handleSelectAll = () => {
-    if (isAllSelected) {
-      setFilters(prev => ({ ...prev, [column]: new Set() }));
-    } else {
-      setFilters(prev => {
-        const next = { ...prev };
-        delete next[column];
-        return next;
-      });
-    }
-  };
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handlePointerDown = (event) => {
-      const target = event.target;
-      if (
-        (menuRef.current && menuRef.current.contains(target)) ||
-        (triggerRef.current && triggerRef.current.contains(target))
-      ) {
-        return;
-      }
-      closeMenu();
-    };
-
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        closeMenu();
-      }
-    };
-
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen, closeMenu]);
-
-  return (
-    <div className="relative inline-block ml-2">
-      <button 
-        ref={triggerRef}
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleMenu(); }}
-        className={`p-1 rounded transition-colors hover:bg-slate-200 ${isFiltered ? 'text-blue-600 bg-blue-50' : 'text-slate-400'}`}
-        title="Filter column"
-      >
-        <Filter size={14} />
-      </button>
-
-      {isOpen && (
-        <>
-          {/* Dropdown Menu Container */}
-          <div 
-            ref={menuRef}
-            className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-xl z-50 p-3 font-normal"
-            onClick={(e) => e.stopPropagation()} 
-          >
-            <div className="relative mb-2">
-              <Search size={14} className="absolute left-2 top-2 text-slate-400" />
-              <input 
-                type="text" 
-                placeholder="Search values..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-300 rounded focus:outline-none focus:border-blue-500"
-              />
-            </div>
-            
-            <div className="max-h-48 overflow-y-auto space-y-1 border border-slate-100 p-1">
-              <label className="flex items-center p-1 hover:bg-slate-50 cursor-pointer rounded">
-                <input 
-                  type="checkbox" 
-                  checked={isAllSelected} 
-                  onChange={handleSelectAll}
-                  className="mr-2 rounded border-slate-300 cursor-pointer"
-                />
-                <span className="text-xs font-semibold text-slate-700">(Select All)</span>
-              </label>
-              {displayValues.map((val, idx) => (
-                <label key={idx} className="flex items-center p-1 hover:bg-slate-50 cursor-pointer rounded">
-                  <input 
-                    type="checkbox" 
-                    checked={selectedValues.has(val)} 
-                    onChange={() => handleCheckboxChange(val)}
-                    className="mr-2 rounded border-slate-300 cursor-pointer"
-                  />
-                  <span className="text-xs text-slate-600 truncate" title={val}>{val === '' ? '(Blanks)' : val}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
-
-// Main Table Component with Dynamic Columns
-const ExcelTable = ({ data, columns, onRowClick, selectedRow }) => {
-  const [filters, setFilters] = useState({});
-  const [openMenuColumn, setOpenMenuColumn] = useState(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(0);
-  const scrollContainerRef = useRef(null);
-  const scrollRafRef = useRef(null);
-  const uniqueValuesCacheRef = useRef(new Map());
-  const deferredFilters = useDeferredValue(filters);
-
-  const getUniqueValues = useCallback((column) => {
-    const cache = uniqueValuesCacheRef.current;
-    if (cache.has(column)) {
-      return cache.get(column);
-    }
-
-    const valueSet = new Set();
-    for (let i = 0; i < data.length; i += 1) {
-      valueSet.add(String(data[i][column] || ''));
-    }
-
-    const computedValues = Array.from(valueSet).sort();
-    cache.set(column, computedValues);
-    return computedValues;
-  }, [data]);
-
-  useEffect(() => {
-    uniqueValuesCacheRef.current = new Map();
-  }, [data, columns]);
-
-  useEffect(() => {
-    const updateViewport = () => {
-      if (scrollContainerRef.current) {
-        setViewportHeight(scrollContainerRef.current.clientHeight);
-      }
-    };
-
-    updateViewport();
-    window.addEventListener('resize', updateViewport);
-    return () => window.removeEventListener('resize', updateViewport);
-  }, []);
-
-  const activeFilters = useMemo(() => {
-    return Object.entries(deferredFilters).filter(([, allowedValues]) => allowedValues instanceof Set);
-  }, [deferredFilters]);
-
-  const filteredData = useMemo(() => {
-    if (!columns || activeFilters.length === 0) return data;
-    return data.filter(row => {
-      for (let i = 0; i < activeFilters.length; i += 1) {
-        const [col, allowedValues] = activeFilters[i];
-        if (!allowedValues.has(String(row[col] || ''))) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [data, columns, activeFilters]);
-
-  const totalRows = filteredData.length;
-  const visibleRowCount = Math.max(1, Math.ceil((viewportHeight || TABLE_ROW_HEIGHT) / TABLE_ROW_HEIGHT) + (TABLE_OVERSCAN_ROWS * 2));
-  const startIndex = Math.max(0, Math.floor(scrollTop / TABLE_ROW_HEIGHT) - TABLE_OVERSCAN_ROWS);
-  const endIndex = Math.min(totalRows, startIndex + visibleRowCount);
-
-  const topPaddingHeight = startIndex * TABLE_ROW_HEIGHT;
-  const bottomPaddingHeight = Math.max(0, (totalRows - endIndex) * TABLE_ROW_HEIGHT);
-
-  const visibleRows = useMemo(() => {
-    return filteredData.slice(startIndex, endIndex);
-  }, [filteredData, startIndex, endIndex]);
-
-  const handleScroll = useCallback((event) => {
-    const nextScrollTop = event.currentTarget.scrollTop;
-
-    if (scrollRafRef.current) {
-      cancelAnimationFrame(scrollRafRef.current);
-    }
-
-    scrollRafRef.current = requestAnimationFrame(() => {
-      setScrollTop(nextScrollTop);
-      scrollRafRef.current = null;
-    });
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (scrollRafRef.current) {
-        cancelAnimationFrame(scrollRafRef.current);
-      }
-    };
-  }, []);
-
-  if (!columns || columns.length === 0) {
-    return null;
-  }
-
-  return (
-    <div
-      ref={scrollContainerRef}
-      onScroll={handleScroll}
-      className="overflow-auto h-full w-full bg-white relative"
-    >
-      <table className="w-full text-left border-collapse whitespace-nowrap">
-        <thead className="sticky top-0 bg-slate-100 z-30 shadow-sm border-b border-slate-200">
-          <tr>
-            {columns.map(col => (
-              <th key={col} className="px-3 py-2 border-r border-slate-200 text-xs font-semibold text-slate-700 bg-slate-50 relative align-middle">
-                <div className="flex items-center justify-between">
-                  <span>{col}</span>
-                  <ColumnFilter
-                    column={col}
-                    getUniqueValues={getUniqueValues}
-                    filters={filters}
-                    setFilters={setFilters}
-                    isOpen={openMenuColumn === col}
-                    toggleMenu={() => setOpenMenuColumn(openMenuColumn === col ? null : col)}
-                    closeMenu={() => setOpenMenuColumn(null)}
-                  />
-                </div>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {topPaddingHeight > 0 && (
-            <tr>
-              <td colSpan={columns.length} style={{ height: `${topPaddingHeight}px` }} />
-            </tr>
-          )}
-          {visibleRows.map((row, i) => {
-            const rowIndex = startIndex + i;
-            return (
-            <tr
-              key={rowIndex}
-              onClick={() => onRowClick(row)}
-              className={`h-9 cursor-pointer border-b border-slate-100 hover:bg-blue-50 transition-colors ${selectedRow === row ? 'bg-blue-100' : 'bg-white'}`}
-            >
-              {columns.map(col => (
-                <td key={col} className="h-9 px-3 py-2 text-xs text-slate-700 border-r border-slate-100 last:border-r-0">
-                  {row[col]}
-                </td>
-              ))}
-            </tr>
-            );
-          })}
-          {bottomPaddingHeight > 0 && (
-            <tr>
-              <td colSpan={columns.length} style={{ height: `${bottomPaddingHeight}px` }} />
-            </tr>
-          )}
-          {totalRows === 0 && (
-            <tr>
-              <td colSpan={columns.length} className="p-6 text-center text-slate-400 text-sm">
-                No matching records found based on the current filters.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-};
 
 export default function App() {
   const [columns, setColumns] = useState([]);
   const [masterData, setMasterData] = useState([]);
-  const [detailData, setDetailData] = useState([]);
-  const [selectedParent, setSelectedParent] = useState(null);
-  const [selectedDetail, setSelectedDetail] = useState(null);
-  const [drawings, setDrawings] = useState([]);
-  const [missingComponents, setMissingComponents] = useState([]);
-  const [loadingDrawings, setLoadingDrawings] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [directoryScopes, setDirectoryScopes] = useState([]);
-  const [componentTargets, setComponentTargets] = useState([]);
-  const dragDepthRef = useRef(0);
-  const drawingRequestIdRef = useRef(0);
-  
-  // File Metadata State
-  const [fileMeta, setFileMeta] = useState({ name: '', date: '', version: '' });
-  const [uploadedBOMFile, setUploadedBOMFile] = useState(null);
-  const [saveRecordId, setSaveRecordId] = useState('');
-  const [saveState, setSaveState] = useState({
-    status: 'draft',
-    file_saved: false,
-    metadata_saved: false,
+
+  const {
+    showHistory,
+    setShowHistory,
+    historyRecords,
+    loadingHistory,
+    loadHistory,
+    deleteHistoryRecord,
+  } = useHistoryRecords({ fetchApiWithFallback });
+
+  const drawingSearch = useDrawingSearch({
+    masterData,
+    fetchApiWithFallback,
+    getPrimaryApiBaseUrl,
   });
-  const [savingAction, setSavingAction] = useState('');
-  
-  // History Modal State
-  const [showHistory, setShowHistory] = useState(false);
-  const [historyRecords, setHistoryRecords] = useState([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
 
-  const loadHistory = async () => {
-    setLoadingHistory(true);
-    setShowHistory(true);
-    try {
-      const { ok, payload } = await fetchApiWithFallback('/api/save/list?limit=50');
-      if (ok && payload && payload.status === 'success') {
-        setHistoryRecords(payload.records || []);
-      }
-    } catch (err) {
-      console.error('List history err:', err);
-    } finally {
-      setLoadingHistory(false);
-    }
-  };
-
-  const loadBOMTable = async (recordId, fileName, version) => {
-    try {
-      setUploading(true);
-      const { ok, payload } = await fetchApiWithFallback(`/api/save/table/${recordId}`);
-      if (ok && payload) {
-        setMasterData(payload.rows || []);
-        if (payload.columns) {
-          setColumns(payload.columns);
-        }
-        setFileMeta({
-          name: fileName || payload.table_state?.source_file_name || 'historical.xlsx',
-          date: payload.table_state?.saved_at ? new Date(payload.table_state.saved_at).toLocaleString() : 'Past',
-          version: version || '1.0'
-        });
-        setSaveRecordId(payload.record_id);
-        applySaveState(payload);
-        
-        setSelectedParent(null);
-        setSelectedDetail(null);
-        setDrawings([]);
-        setDirectoryScopes([]);
-        setComponentTargets([]);
-        setMissingComponents([]);
-        setDetailData([]);
-        
-        setShowHistory(false);
-      }
-    } catch (err) {
-      alert('Failed to load past BOM table.');
-      console.error(err);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const downloadBOMFile = async (recordId) => {
-    try {
-      // Direct window.open instead of fetch to let browser handle the binary download elegantly
-      const base = API_BASE_CANDIDATES[0] || 'http://localhost:8000';
-      window.open(`${base}/api/save/file/${recordId}/download`, '_blank');
-    } catch (err) {
-      console.error('Download err:', err);
-      alert('Could not download file.');
-    }
-  };
-
-  const deleteHistoryRecord = async (recordId) => {
-    if (!window.confirm('Are you sure you want to permanently delete this BOM record?')) {
-      return;
-    }
-    try {
-      setLoadingHistory(true);
-      const { ok, payload } = await fetchApiWithFallback(`/api/save/record/${recordId}`, {
-        method: 'DELETE',
-      });
-      if (ok && payload && payload.status === 'success') {
-        setHistoryRecords(prev => prev.filter(r => r.record_id !== recordId));
-      } else {
-        alert('Failed to delete the record.');
-      }
-    } catch (err) {
-      console.error('Delete history err:', err);
-      alert('Could not connect to the server to delete the record.');
-    } finally {
-      setLoadingHistory(false);
-    }
-  };
-
-  const applySaveState = useCallback((payload) => {
-    if (!payload || typeof payload !== 'object') return;
-
-    if (payload.record_id) {
-      setSaveRecordId(payload.record_id);
-    }
-
-    if (payload.save_state) {
-      setSaveState({
-        status: payload.save_state.status || 'draft',
-        file_saved: Boolean(payload.save_state.file_saved),
-        metadata_saved: Boolean(payload.save_state.metadata_saved),
-      });
-    }
+  const onHydrateTable = useCallback(({ rows, columns: nextColumns }) => {
+    setMasterData(rows || []);
+    setColumns(nextColumns || []);
   }, []);
 
-  const resetSaveState = useCallback(() => {
-    setSaveRecordId('');
-    setSaveState({
-      status: 'draft',
-      file_saved: false,
-      metadata_saved: false,
-    });
-    setSavingAction('');
-  }, []);
+  const onResetDependentView = useCallback(() => {
+    drawingSearch.resetDrawingView();
+  }, [drawingSearch.resetDrawingView]);
 
-  const saveStatusLabel = useMemo(() => {
-    if (saveState.file_saved && saveState.metadata_saved) {
-      return '✔ Saved to Database';
+  const {
+    fileMeta,
+    setFileMeta,
+    saveRecordId,
+    savingAction,
+    uploading,
+    canSaveBoth,
+    saveStatusLabel,
+    saveStatusClass,
+    loadBOMTable,
+    handleFileUpload,
+    saveBoth,
+    downloadBOMFile,
+    processFile,
+  } = useBomUploadSave({
+    fetchApiWithFallback,
+    getPrimaryApiBaseUrl,
+    apiBaseCandidates: API_BASE_CANDIDATES,
+    maxUploadBytes: MAX_UPLOAD_BYTES,
+    onHydrateTable,
+    onResetDependentView,
+  });
+
+  const {
+    isDragging,
+    onDragEnter,
+    onDragLeave,
+    onDragOver,
+    onDrop,
+  } = useDragAndDropUpload(processFile);
+
+  const handleLoadFromHistory = useCallback(async (recordId, fileName, version) => {
+    const loaded = await loadBOMTable(recordId, fileName, version);
+    if (loaded) {
+      setShowHistory(false);
     }
-    if (saveState.file_saved || saveState.metadata_saved) {
-      return 'Partial Save (Click Save to SQL)';
-    }
-    return '▶ Unsaved (Preview Only)';
-  }, [saveState]);
-
-  const saveStatusClass = useMemo(() => {
-    if (saveState.file_saved && saveState.metadata_saved) {
-      return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-    }
-    if (saveState.file_saved || saveState.metadata_saved) {
-      return 'bg-amber-50 text-amber-700 border-amber-200';
-    }
-    return 'bg-slate-100 text-slate-600 border-slate-200';
-  }, [saveState]);
-
-  const canSaveFile = Boolean(saveRecordId && uploadedBOMFile);
-  const canSaveMetadata = Boolean(saveRecordId && fileMeta.name && fileMeta.date && fileMeta.version);
-  const canSaveBoth = canSaveFile && canSaveMetadata;
-
-  const rowsByParent = useMemo(() => {
-    const grouped = new Map();
-
-    for (let i = 0; i < masterData.length; i += 1) {
-      const row = masterData[i];
-      const parentVal = getCaselessValue(row, 'PARENT');
-      const parentModel = normalizeKey(parentVal);
-      if (!parentModel) continue;
-
-      if (!grouped.has(parentModel)) {
-        grouped.set(parentModel, []);
-      }
-      grouped.get(parentModel).push(row);
-    }
-
-    return grouped;
-  }, [masterData]);
-
-  useEffect(() => {
-    // Prevent browser from opening/downloading files when dropped outside the intended drop zone.
-    const preventWindowFileDrop = (event) => {
-      if (event.dataTransfer?.types?.includes('Files')) {
-        event.preventDefault();
-      }
-    };
-
-    window.addEventListener('dragover', preventWindowFileDrop);
-    window.addEventListener('drop', preventWindowFileDrop);
-
-    return () => {
-      window.removeEventListener('dragover', preventWindowFileDrop);
-      window.removeEventListener('drop', preventWindowFileDrop);
-    };
-  }, []);
-
-  const processFile = async (file) => {
-    if (!file) return;
-
-    const extension = file.name.toLowerCase().split('.').pop();
-    if (!['xlsx', 'csv'].includes(extension)) {
-      alert('Invalid file type. Please upload a .xlsx or .csv file.');
-      return;
-    }
-
-    if (file.size > MAX_UPLOAD_BYTES) {
-      alert(`File is too large. Max allowed size is ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.`);
-      return;
-    }
-
-    resetSaveState();
-    setUploading(true);
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/upload', {
-        method: "POST",
-        body: formData,
-      });
-      const result = payload || {};
-      
-      if (ok && result.status === "success") {
-        const fetchedCols = result.columns && result.columns.length > 0 
-          ? result.columns 
-          : (result.data && result.data.length > 0 ? Object.keys(result.data[0]) : []);
-          
-        setColumns(fetchedCols);
-        setMasterData(result.data || []);
-        setDetailData([]);
-        setSelectedParent(null);
-        setDrawings([]);
-        setDirectoryScopes([]);
-        setComponentTargets([]);
-        setMissingComponents([]);
-
-        const now = new Date();
-        const formattedDate = now.toLocaleDateString() + ' ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        setFileMeta({
-          name: file.name,
-          date: formattedDate,
-          version: '1.0'
-        });
-        setUploadedBOMFile(file);
-
-        if (result.record_id) {
-          applySaveState(result);
-        } else {
-          alert('BOM uploaded, but backend did not return a record ID for database persistence.');
-        }
-
-      } else {
-        const reason = result.message || `HTTP ${status}`;
-        alert(`Upload failed: ${reason} (API: ${baseUrl})`);
-      }
-    } catch (error) {
-      console.error("Upload error:", error);
-      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleFileUpload = (event) => {
-    processFile(event.target.files[0]);
-    event.target.value = ''; 
-  };
-
-  const saveBoth = useCallback(async () => {
-    if (!saveRecordId || !uploadedBOMFile) {
-      alert('Please upload a BOM file first.');
-      return;
-    }
-
-    const normalizedFileName = String(fileMeta.name || '').trim();
-    const normalizedUploadDate = String(fileMeta.date || '').trim();
-    const normalizedVersion = String(fileMeta.version || '').trim() || '1.0';
-
-    if (!normalizedFileName || !normalizedUploadDate) {
-      alert('File Name and Upload Date are required to save metadata.');
-      return;
-    }
-
-    setSavingAction('both');
-    const formData = new FormData();
-    formData.append('record_id', saveRecordId);
-    formData.append('file_name', normalizedFileName);
-    formData.append('upload_date', normalizedUploadDate);
-    formData.append('version', normalizedVersion);
-    formData.append('file', uploadedBOMFile);
-
-    try {
-      const { ok, payload, status, baseUrl } = await fetchApiWithFallback('/api/save/both', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (ok && payload?.status === 'success') {
-        applySaveState(payload);
-        if (normalizedVersion !== fileMeta.version) {
-          setFileMeta(prev => ({ ...prev, version: normalizedVersion }));
-        }
-      } else {
-        const reason = payload?.message || `HTTP ${status}`;
-        alert(`Save Both failed: ${reason} (API: ${baseUrl})`);
-      }
-    } catch (error) {
-      console.error('Save both error:', error);
-      alert(`Cannot connect to backend server. Tried: ${API_BASE_CANDIDATES.join(', ')}`);
-    } finally {
-      setSavingAction('');
-    }
-  }, [saveRecordId, uploadedBOMFile, fileMeta, applySaveState]);
-
-  // Drag and Drop Event Handlers (Preventing default browser download)
-  const onDragEnter = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!e.dataTransfer?.types?.includes('Files')) return;
-    dragDepthRef.current += 1;
-    setIsDragging(true);
-  };
-
-  const onDragLeave = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!e.dataTransfer?.types?.includes('Files')) return;
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) {
-      setIsDragging(false);
-    }
-  };
-
-  const onDragOver = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!e.dataTransfer?.types?.includes('Files')) return;
-    e.dataTransfer.dropEffect = 'copy';
-    setIsDragging(true);
-  };
-
-  const onDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!e.dataTransfer?.types?.includes('Files')) return;
-    dragDepthRef.current = 0;
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processFile(e.dataTransfer.files[0]);
-      e.dataTransfer.clearData();
-    }
-  };
-
-  const previewDrawingFile = useCallback((drawing) => {
-    if (!drawing?.drive_id || !drawing?.item_id) {
-      return;
-    }
-
-    const base = API_BASE_CANDIDATES[0];
-    const previewUrl = `${base}/api/sp_file?drive_id=${encodeURIComponent(drawing.drive_id)}&item_id=${encodeURIComponent(drawing.item_id)}&filename=${encodeURIComponent(drawing.name || 'drawing')}&mode=preview`;
-    window.open(previewUrl, '_blank', 'noopener,noreferrer');
-  }, []);
-
-  const downloadDrawingFile = useCallback(async (drawing) => {
-    if (!drawing?.drive_id || !drawing?.item_id) {
-      return;
-    }
-
-    try {
-      const base = API_BASE_CANDIDATES[0];
-      const downloadUrl = `${base}/api/sp_file?drive_id=${encodeURIComponent(drawing.drive_id)}&item_id=${encodeURIComponent(drawing.item_id)}&filename=${encodeURIComponent(drawing.name || 'drawing')}&mode=download`;
-      const response = await fetch(downloadUrl);
-
-      if (!response.ok) {
-        throw new Error(`Download failed (HTTP ${response.status})`);
-      }
-
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = drawing.name || 'drawing';
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      URL.revokeObjectURL(objectUrl);
-    } catch (error) {
-      console.error('Download drawing failed:', error);
-      alert('Failed to download this file. Please try again.');
-    }
-  }, []);
-
-  const onMasterRowClicked = useCallback(async (row) => {
-    const requestId = ++drawingRequestIdRef.current;
-    setSelectedParent(row);
-    setSelectedDetail(null);
-    setDrawings([]);
-    setDirectoryScopes([]);
-    setComponentTargets([]);
-    setMissingComponents([]);
-    setLoadingDrawings(true);
-
-    // BOM-Tech rule: focus key is the selected row's PARENT model, then filter all rows with the same PARENT.
-    const parentVal = getCaselessValue(row, 'PARENT');
-    const selectedParentModel = normalizeKey(parentVal);
-    const children = selectedParentModel ? (rowsByParent.get(selectedParentModel) || []) : [];
-
-    setDetailData(children);
-
-    if (!selectedParentModel || children.length === 0) {
-      if (requestId === drawingRequestIdRef.current) {
-        setLoadingDrawings(false);
-      }
-      return;
-    }
-
-    const uniqueTargets = [];
-    const seenTargets = new Set();
-    children.forEach(item => {
-      const compVal = getCaselessValue(item, 'COMPONENT') || getCaselessValue(item, 'TOP_ASSY');
-      const component = normalizeKey(compVal);
-      if (!component) return;
-
-      const catVal = getCaselessValue(item, 'Category');
-      const category = normalizeKey(catVal) || 'Unknown Category';
-      const key = `${category}::${component}`;
-      if (seenTargets.has(key)) return;
-      seenTargets.add(key);
-      uniqueTargets.push({ category, component });
-    });
-
-    if (uniqueTargets.length === 0) {
-      if (requestId === drawingRequestIdRef.current) {
-        setLoadingDrawings(false);
-      }
-      return;
-    }
-
-    try {
-      const responseList = await Promise.all(uniqueTargets.map(async ({ category, component }) => {
-        const { ok, payload } = await fetchApiWithFallback(`/api/search?category=${encodeURIComponent(category)}&component=${encodeURIComponent(component)}`);
-        const data = payload || {};
-
-        if (!ok || data.status !== 'success') {
-          return { drawings: [], scopes: [] };
-        }
-
-        const enriched = (data.results || []).map(file => ({
-          ...file,
-          id: file.id || `${component}-${file.name || 'drawing'}-${file.version || ''}`,
-          sourceComponent: component,
-          sourceCategory: category,
-        }));
-
-        return {
-          drawings: enriched,
-          scopes: data.search_scopes || [],
-        };
-      }));
-
-      if (requestId !== drawingRequestIdRef.current) {
-        return;
-      }
-
-      const drawingMap = new Map();
-      responseList.flatMap(item => item.drawings).forEach(file => {
-        const key = `${file.id}::${file.sourceComponent}`;
-        if (!drawingMap.has(key)) {
-          drawingMap.set(key, file);
-        }
-      });
-
-      const allDrawings = Array.from(drawingMap.values());
-      setDrawings(allDrawings);
-
-      // Build scoped directory paths: OneFactory -> Drawings/STEP Files -> Category
-      const scopeMap = new Map();
-      responseList.flatMap(item => item.scopes || []).forEach(scope => {
-        const site = normalizeKey(scope.site);
-        const root = normalizeKey(scope.root);
-        const scopeCategory = normalizeKey(scope.category);
-        if (!site || !root || !scopeCategory) return;
-
-        const key = `${site}::${root}::${scopeCategory}`;
-        if (!scopeMap.has(key)) {
-          scopeMap.set(key, {
-            site,
-            root,
-            category: scopeCategory,
-          });
-        }
-      });
-      setDirectoryScopes(Array.from(scopeMap.values()));
-
-      const uniqueComponents = Array.from(new Set(uniqueTargets.map(target => target.component)));
-      setComponentTargets(uniqueComponents);
-
-      // Check which components had no drawings found
-      const foundComponents = new Set(allDrawings.map(d => d.sourceComponent));
-      const missing = uniqueTargets.filter(t => !foundComponents.has(t.component)).map(t => t.component);
-      setMissingComponents(missing);
-
-    } catch (error) {
-      if (requestId === drawingRequestIdRef.current) {
-        console.error('Fetch drawings failed:', error);
-        setDrawings([]);
-        setDirectoryScopes([]);
-        setComponentTargets([]);
-        setMissingComponents([]);
-      }
-    } finally {
-      if (requestId === drawingRequestIdRef.current) {
-        setLoadingDrawings(false);
-      }
-    }
-  }, [rowsByParent]);
-
-  const onDetailRowClicked = useCallback((row) => {
-    setSelectedDetail(row);
-  }, []);
+  }, [loadBOMTable, setShowHistory]);
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans text-sm">
-      {/* Top Navigation */}
-      <div className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm shrink-0 z-20">
-        <div className="flex items-center space-x-2">
-          <Database size={22} className="text-blue-600" />
-          <h1 className="text-lg font-bold text-slate-800 tracking-tight">BOM & Drawings Workspace</h1>
-        </div>
-        <div className="flex items-center space-x-3">
-          <button 
-            type="button" 
-            onClick={loadHistory} 
-            className="flex items-center px-4 py-2 bg-slate-100 border border-slate-300 text-slate-700 font-medium rounded shadow-sm hover:bg-slate-200 transition cursor-pointer"
-          >
-            {loadingHistory ? <Loader2 className="animate-spin mr-2" size={16} /> : <History size={16} className="mr-2" />}
-            <span>Past Records</span>
-          </button>
-
-          <label className="flex items-center px-4 py-2 bg-blue-600 text-white font-medium rounded shadow hover:bg-blue-700 transition cursor-pointer">
-            {uploading ? <Loader2 className="animate-spin mr-2" size={16} /> : <Upload size={16} className="mr-2" />}
-            <span>{uploading ? "Processing..." : "Upload New BOM"}</span>
-            <input type="file" accept=".csv, .xlsx" className="hidden" onChange={handleFileUpload} />
-          </label>
-        </div>
-      </div>
+      <TopBar
+        uploading={uploading}
+        loadingHistory={loadingHistory}
+        onLoadHistory={loadHistory}
+        onFileUpload={handleFileUpload}
+      />
 
       {/* Main Layout */}
       <div className="flex flex-1 overflow-hidden p-4 space-x-4">
@@ -997,8 +156,8 @@ export default function App() {
                   key={`master-${saveRecordId || 'draft'}-${columns.length}-${masterData.length}`}
                   data={masterData}
                   columns={columns}
-                  onRowClick={onMasterRowClicked}
-                  selectedRow={selectedParent}
+                  onRowClick={drawingSearch.onMasterRowClicked}
+                  selectedRow={drawingSearch.selectedParent}
                 />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400">
@@ -1014,22 +173,22 @@ export default function App() {
              <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
               <div className="flex items-center">
                 <h2 className="font-semibold text-slate-700 mr-4">2. Required Child Components</h2>
-                {selectedParent && normalizeKey(getCaselessValue(selectedParent, 'PARENT')) && (
+                {drawingSearch.selectedParent && normalizeKey(getCaselessValue(drawingSearch.selectedParent, 'PARENT')) && (
                   <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded border border-blue-200 shadow-sm">
-                    Target Parent: <span className="font-mono font-bold">{getCaselessValue(selectedParent, 'PARENT')}</span>
+                    Target Parent: <span className="font-mono font-bold">{getCaselessValue(drawingSearch.selectedParent, 'PARENT')}</span>
                   </span>
                 )}
               </div>
-              <span className="text-xs font-medium text-slate-500 bg-slate-200 px-2 py-1 rounded-full">Total: {detailData.length} Rows</span>
+              <span className="text-xs font-medium text-slate-500 bg-slate-200 px-2 py-1 rounded-full">Total: {drawingSearch.detailData.length} Rows</span>
             </div>
             <div className="flex-1 overflow-hidden relative">
-              {selectedParent ? (
+              {drawingSearch.selectedParent ? (
                 <ExcelTable
-                  key={`detail-${normalizeKey(getCaselessValue(selectedParent, 'PARENT'))}-${detailData.length}`}
-                  data={detailData}
+                  key={`detail-${normalizeKey(getCaselessValue(drawingSearch.selectedParent, 'PARENT'))}-${drawingSearch.detailData.length}`}
+                  data={drawingSearch.detailData}
                   columns={columns}
-                  onRowClick={onDetailRowClicked}
-                  selectedRow={selectedDetail}
+                  onRowClick={drawingSearch.onDetailRowClicked}
+                  selectedRow={drawingSearch.selectedDetail}
                 />
               ) : (
                 <div className="h-full flex items-center justify-center text-slate-400 italic">
@@ -1040,218 +199,27 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right Section (Drawings) */}
-        <div className="w-5/12 bg-white rounded-lg shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b bg-slate-50">
-            <h2 className="font-semibold text-slate-700">3. SharePoint Drawings</h2>
-          </div>
-          
-          <div className="flex-1 p-4 overflow-auto bg-slate-50/50">
-            {!selectedParent ? (
-              <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                <FileText size={48} className="mb-4 text-slate-300" />
-                <p>Select a row from the top-left table to view all related drawings.</p>
-              </div>
-            ) : (
-              <div>
-                {/* Beautiful Mock SharePoint Breadcrumb Path */}
-                {(directoryScopes.length > 0 || componentTargets.length > 0) && (
-                  <div className="mb-4 bg-white border border-slate-200 rounded-lg shadow-sm p-3">
-                    <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Directory Path</p>
-                    <div className="space-y-2 text-sm text-slate-600">
-                      {directoryScopes.map((scope) => (
-                        <div key={`${scope.site}-${scope.root}-${scope.category}`} className="flex flex-wrap items-center gap-y-1">
-                          <HardDrive size={16} className="text-slate-400 mr-1 shrink-0" />
-                          <span className="flex items-center px-2 py-1 rounded hover:bg-slate-100 cursor-pointer">{scope.site}</span>
-                          <ChevronRight size={14} className="text-slate-300 shrink-0" />
-                          <span className="flex items-center px-2 py-1 rounded hover:bg-slate-100 cursor-pointer">
-                            <FolderOpen size={14} className="mr-1.5 text-blue-500" />
-                            {scope.root}
-                          </span>
-                          <ChevronRight size={14} className="text-slate-300 shrink-0" />
-                          <span className="flex items-center px-2 py-1 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100">
-                            <FolderOpen size={14} className="mr-1.5 text-blue-500" />
-                            {scope.category}
-                          </span>
-                          <ChevronRight size={14} className="text-slate-300 shrink-0" />
-                        </div>
-                      ))}
-
-                      {componentTargets.length > 0 && (
-                        <div className="pt-2 border-t border-slate-100">
-                          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Components</p>
-                          <div className="mt-1 flex flex-wrap gap-1.5">
-                            {componentTargets.map((component) => (
-                              <span key={component} className="inline-flex items-center px-2 py-1 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-100">
-                                <FileText size={13} className="mr-1" />
-                                {component}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {loadingDrawings ? (
-                   <div className="flex flex-col items-center justify-center py-12 text-blue-500">
-                     <Loader2 className="animate-spin mb-3" size={28} />
-                     <span className="text-sm font-medium">Fetching drawings via API...</span>
-                   </div>
-                ) : drawings.length > 0 ? (
-                  <div className="space-y-4">
-                    <p className="text-xs font-semibold text-slate-500 uppercase">Found {drawings.length} matching files</p>
-                    
-                    {missingComponents.length > 0 && (
-                      <div className="bg-orange-50 border border-orange-200 text-orange-800 p-3 rounded-lg shadow-sm text-sm">
-                         <p className="font-semibold mb-1 flex items-center"><Search size={16} className="mr-1.5" /> No Drawings Found</p>
-                         <p className="mb-2 opacity-90">The following components have no drawings associated with them in SharePoint:</p>
-                         <div className="flex flex-wrap gap-2">
-                           {missingComponents.map((c, i) => (
-                             <span key={i} className="px-2 py-0.5 bg-orange-100/50 border border-orange-200 rounded text-xs font-medium">
-                               {c}
-                             </span>
-                           ))}
-                         </div>
-                      </div>
-                    )}
-                    
-                    <div className="space-y-3">
-                      {drawings.map(drawing => (
-                        <div key={drawing.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-400 hover:shadow-md transition-all group gap-y-3 sm:gap-y-0">
-                           <div className="flex items-center space-x-4">
-                              <div className={`w-12 h-12 rounded flex shrink-0 items-center justify-center text-white font-bold text-sm shadow-inner ${drawing.type.toUpperCase() === 'PDF' ? 'bg-red-500' : 'bg-indigo-500'}`}>
-                                {drawing.type}
-                              </div>
-                              <div className="min-w-0 pr-4">
-                                <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-700 transition-colors break-words">{drawing.name}</p>
-                                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 mt-1">
-                                  <span className="font-medium bg-slate-100 rounded px-1.5 py-0.5">Component: {drawing.sourceComponent || '-'}</span>
-                                  <span className="mt-1">Revision: {drawing.version}</span>
-                                  <span className="mt-1">{drawing.date}</span>
-                                </div>
-                              </div>
-                           </div>
-                           <div className="flex space-x-2 shrink-0">
-                              <button onClick={() => previewDrawingFile(drawing)} className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Preview Online">
-                                <Eye size={18} />
-                              </button>
-                              <button onClick={() => downloadDrawingFile(drawing)} className="p-2 inline-flex items-center justify-center bg-white text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 rounded shadow-sm transition-colors" title="Download">
-                                <Download size={18} />
-                              </button>
-                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center py-10 px-4 text-slate-500 bg-white border border-dashed border-slate-300 rounded-lg mt-4">
-                    <p className="mb-2 font-medium text-slate-600">No drawings found in SharePoint.</p>
-                    
-                    {missingComponents.length > 0 && (
-                      <div className="mt-4 bg-orange-50 border border-orange-200 text-orange-800 p-3 rounded-lg shadow-sm text-sm text-left">
-                         <p className="font-semibold mb-1 flex items-center justify-center"><Search size={16} className="mr-1.5" /> Missing Drawings</p>
-                         <p className="mb-2 opacity-90 text-center">The following components have no drawings associated with them in SharePoint:</p>
-                         <div className="flex flex-wrap justify-center gap-2 mt-3">
-                           {missingComponents.map((c, i) => (
-                             <span key={i} className="px-2 py-0.5 bg-orange-100/60 border border-orange-200 rounded text-xs font-medium">
-                               {c}
-                             </span>
-                           ))}
-                         </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
+        <DrawingPanel
+          selectedParent={drawingSearch.selectedParent}
+          directoryScopes={drawingSearch.directoryScopes}
+          componentTargets={drawingSearch.componentTargets}
+          loadingDrawings={drawingSearch.loadingDrawings}
+          drawings={drawingSearch.drawings}
+          missingComponents={drawingSearch.missingComponents}
+          onPreview={drawingSearch.previewDrawingFile}
+          onDownload={drawingSearch.downloadDrawingFile}
+        />
 
       </div>
 
-      {showHistory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
-          <div className="bg-white w-3/4 max-w-5xl rounded-lg shadow-xl overflow-hidden flex flex-col h-4/5 max-h-[800px]">
-            <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
-              <h2 className="text-lg font-bold text-slate-800">Historical BOM Workspace</h2>
-              <button 
-                onClick={() => setShowHistory(false)}
-                className="text-slate-400 hover:text-slate-600 transition"
-              >
-                ✕ Close
-              </button>
-            </div>
-            
-            <div className="flex-1 overflow-auto p-4 bg-white">
-              {historyRecords.length === 0 ? (
-                 <div className="flex flex-col items-center justify-center p-12 text-slate-400 h-full">
-                    <Database size={48} className="mb-4 text-slate-300" />
-                    <p>No historical BOMs discovered in the central database.</p>
-                 </div>
-              ) : (
-                <div className="overflow-x-auto rounded border border-slate-200">
-                  <table className="w-full text-left border-collapse text-sm">
-                    <thead className="bg-slate-100 border-b border-slate-200">
-                      <tr>
-                        <th className="py-3 justify-center px-4 font-semibold text-slate-700 whitespace-nowrap">Status</th>
-                        <th className="py-3 px-4 font-semibold text-slate-700">Identified BOM Title</th>
-                        <th className="py-3 px-4 font-semibold text-slate-700">Lines</th>
-                        <th className="py-3 px-4 font-semibold text-slate-700">Uploaded timestamp</th>
-                        <th className="py-3 px-4 font-semibold text-slate-700 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {historyRecords.map(r => (
-                         <tr key={r.record_id} className="hover:bg-slate-50">
-                           <td className="py-2.5 px-4 whitespace-nowrap">
-                             {r.status === 'paired' ? 
-                               <span className="text-xs bg-emerald-100 border border-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded-full">Paired</span> : 
-                               <span className="text-xs bg-slate-200 border border-slate-300 text-slate-700 px-2 py-0.5 rounded-full">{r.status}</span>
-                             }
-                           </td>
-                           <td className="py-2.5 px-4 font-medium text-slate-800">
-                             {r.file_name || r.original_file_name || 'Legacy Data File'}
-                           </td>
-                           <td className="py-2.5 px-4 text-slate-600 tabular-nums">
-                              {r.bom_row_count || '?'}
-                           </td>
-                           <td className="py-2.5 px-4 text-slate-500 text-xs tabular-nums">
-                              {new Date(r.updated_at).toLocaleString()}
-                           </td>
-                           <td className="py-2.5 px-4 whitespace-nowrap text-right space-x-2">
-                             <button
-                                onClick={() => loadBOMTable(r.record_id, r.file_name, r.version)}
-                                className="px-3 py-1.5 text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 rounded hover:bg-blue-100 transition shadow-sm"
-                             >
-                               Load SQL Data Table
-                             </button>
-                             {r.file_saved && (
-                               <button
-                                   onClick={() => downloadBOMFile(r.record_id)}
-                                  className="px-3 py-1.5 text-xs font-semibold bg-slate-50 text-slate-700 border border-slate-300 rounded hover:bg-slate-100 transition shadow-sm"
-                               >
-                                 ⬇ Raw Excel .xlsx
-                               </button>
-                             )}
-                             <button
-                                onClick={() => deleteHistoryRecord(r.record_id)}
-                                className="px-3 py-1.5 text-xs font-semibold bg-red-50 text-red-700 border border-red-200 rounded hover:bg-red-100 transition shadow-sm"
-                             >
-                               Delete
-                             </button>
-                           </td>
-                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <HistoryModal
+        show={showHistory}
+        onClose={() => setShowHistory(false)}
+        historyRecords={historyRecords}
+        onLoadBOMTable={handleLoadFromHistory}
+        onDownloadBOMFile={downloadBOMFile}
+        onDeleteHistoryRecord={deleteHistoryRecord}
+      />
 
     </div>
   );
