@@ -85,3 +85,35 @@ Search diagnostics are available as an opt-in response extension:
 Performance benchmark helper:
 - `python scripts/sharepoint_search_benchmark.py --base-url http://127.0.0.1:8000 --category Drawings --component FB --runs 5`
 - Output includes `avg_elapsed_ms`, `p95_elapsed_ms`, pass/fail counts, and per-iteration details.
+
+Benchmark baseline comparison workflow:
+- Generate current benchmark report:
+	- `python scripts/sharepoint_search_benchmark.py --base-url http://127.0.0.1:8000 --category Drawings --component FB --runs 5 --output data/perf/sharepoint_current.json`
+- Compare current report against baseline (exit code `2` if regression exceeds thresholds):
+	- `python scripts/sharepoint_search_benchmark.py --input-report data/perf/sharepoint_current.json --baseline data/perf/sharepoint_baseline.json`
+- Promote current report as new baseline:
+	- `python scripts/sharepoint_search_benchmark.py --input-report data/perf/sharepoint_current.json --write-baseline data/perf/sharepoint_baseline.json`
+
+Threshold controls:
+- `--max-latency-regression-pct` (default: `20.0`)
+- `--max-fail-rate-increase` (default: `0.10`, equals 10%)
+
+## Stage 5A observability status
+
+Backend request observability now includes:
+- Per-request `X-Request-ID` response header.
+- Structured JSON logs for request summary (`method`, `path`, `status_code`, `elapsed_ms`, `client_ip`).
+- Error responses include `request_id` so frontend and logs can be correlated quickly.
+
+Log level can be controlled via:
+- `BOM_LOG_LEVEL` (default: `INFO`)
+
+## Stage 5B quality gate status
+
+Backend tests now include:
+- Unit tests for BOM utilities and observability formatting.
+- Contract tests verifying `X-Request-ID` response header and error-body `request_id` consistency.
+- Unit tests for benchmark baseline-comparison regression rules.
+
+Run tests:
+- `python -m unittest discover -s tests -p "test_*.py"`
